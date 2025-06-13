@@ -1,0 +1,9 @@
+apiVersion: prescaler.altuhov.su/v1
+kind: Prescale
+metadata:
+  labels:
+    app.kubernetes.io/name: prescaler
+    app.kubernetes.io/managed-by: kustomize
+  name: prescale-sample
+spec:
+  # TODO(user): Add fields here
