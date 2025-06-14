@@ -28,14 +28,47 @@ type PrescaleSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
-	// Foo is an example field of Prescale. Edit prescale_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
+	// Name of the resource to scale
+	TargetHpaName string `json:"targetHpaName"`
+
+	// Percentage to scale up by
+	// The following markers will use OpenAPI v3 schema to validate the value
+	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	// +kubebuilder:validation:ExclusiveMaximum=false
+	Percent *int32 `json:"percent"`
+
+	// Suspend the prescaler
+	// The following markers will use OpenAPI v3 schema to validate the value
+	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
+	// +kubebuilder:validation:Type=boolean
+	Suspend *bool `json:"suspend"`
+
+	// The schedule in Cron format, see https://en.wikipedia.org/wiki/Cron.
+	Schedule string `json:"schedule"`
+
+	// +kubebuilder:validation:Minimum=0
+
+	// Optional deadline in seconds for starting the job if it misses scheduled
+	// time for any reason.  Missed jobs executions will be counted as failed ones.
+	// +optional
+	StartingDeadlineSeconds *int64 `json:"startingDeadlineSeconds,omitempty"`
 }
 
 // PrescaleStatus defines the observed state of Prescale.
 type PrescaleStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// LastScaledTime is the last time the resource was scaled
+	LastScaledTime *metav1.Time `json:"lastScaledTime,omitempty"`
+
+	// LastPrescaleSpecCpuUtilization is the last prescale spec cpu utilization
+	LastPrescaleSpecCpuUtilization int32 `json:"lastPrescaleSpecCpuUtilization,omitempty"`
+
+	// LastOriginalSpecCpuUtilization is the last original spec cpu utilization
+	LastOriginalSpecCpuUtilization int32 `json:"lastOriginalSpecCpuUtilization,omitempty"`
+
+	// OrphanedSpecCpuUtilization is the orphaned spec cpu utilization becaof failed hpa reverting
+	OrphanedSpecCpuUtilization *int32 `json:"orphanedSpecCpuUtilization,omitempty"`
 }
 
 // +kubebuilder:object:root=true

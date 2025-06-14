@@ -3,7 +3,7 @@ controllerManager:
   replicas: 1
   container:
     image:
-      repository: controller
+      repository: altuhovsu/prescaler
       tag: latest
     args:
       - "--leader-elect"

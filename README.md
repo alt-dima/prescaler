@@ -1,8 +1,36 @@
-# prescaler
-// TODO(user): Add simple overview of use/purpose
+# Prescaler
+Prescale/ScaleUp your HPAs in Kubernetes minutes before regular spikes of load/traffic (like on round hours) and let HPA do the rest after (to continue scale up or scale down after spike)
 
 ## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+Imagine you have a Deployment of SuperHeavyApp in your Kubernetes with 10 replicas and HPA.
+Every hour you have short/fast/temporary spike of traffic that requires to scale SuperHeavyApp up to +50% of pods.
+For example,
+- At 8:30:00 = 10 SuperHeavyApp ready pods, HPA at 70% from 2000mCPU among 10 pods
+- At 8:55:00 = 10 SuperHeavyApp ready pods, HPA at 70% from 2000mCPU among 10 pods
+- At 9:00:00 = 10 SuperHeavyApp ready pods, HPA at 140% from 2000mCPU among 10 pods, spike of traffic begins
+- At 9:00:30 = HPA triggers to scale +10 pods, clients get throttled/distrupted (getting 503/504)
+- At 9:02:00 = 10 SuperHeavyApp ready pods, 10 pods in pending state waiting for node, HPA at 140% from 2000mCPU among 10 pods, spike of traffic ends
+- At 9:03:00 = New node added to cluster (by Karpenter/CA), 10 new pods become available, HPA at 70% from 2000mCPU among 20 pods
+- !?!?!?
+- At 9:08:00 = HPA scales back to 10 SuperHeavyApp pods, HPA at 70% from 2000mCPU among 10 pods
+
+In this case we have two options
+1. Configure HPA to scale on 40% of CPU usage and `stabilizationWindowSeconds: 3600` so it will be upscaled most of the time with wasted resources/money
+2. Use Prescaler! And configure Prescaler CR for SuperHeavyApp HPA/Deployment to prescale by +50% at `"56 * * * *"`, and Prescaler will at 8:56:00 do:
+2.1. Change HPA's CPU AverageUtilization from 70% to 35%
+2.2. HPA will begin scaling X2 from 10 to 20 pods, Prescaler will begin to wait 10 sec
+2.3. HPA scaled to 20 pods, Prescaler waited and reverts back HPA's CPU AverageUtilization to 70%
+2.4. HPA remains upscaled (real usage remains 35% among 20 pods) up to `behavior.scaleDown.stabilizationWindowSeconds`, which by default is 5 minutes
+2.5. At round hour (9:00:00) you receive a spike of traffic and cpu usage naturally increase to expected 70% (among 20 pods)
+2.6. If the spike continue, HPA will not scale down, event continue to natively scale up
+2.7. If the spike ends, HPA will scale down after spike ends (spike ended at 9:03:00 +5 minutes => at 9:08:00 hpa scales down)
+2.8. And so on for every round hour
+
+Important!
+If your SuperHeavyApp takes a lot of time to start:
+1. Increase `behavior.scaleDown.stabilizationWindowSeconds` from default 5 minutes (for example, 10 minutes)
+2. Start prescaling earlier (for example, at `"51 * * * *"`)
+In this case you will provide 9 minutes before round hour for pods to become ready
 
 ## Getting Started
 

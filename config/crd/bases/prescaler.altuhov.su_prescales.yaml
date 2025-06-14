@@ -1,0 +1,103 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.18.0
+  name: prescales.prescaler.altuhov.su
+spec:
+  group: prescaler.altuhov.su
+  names:
+    kind: Prescale
+    listKind: PrescaleList
+    plural: prescales
+    singular: prescale
+  scope: Namespaced
+  versions:
+  - name: v1
+    schema:
+      openAPIV3Schema:
+        description: Prescale is the Schema for the prescales API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: PrescaleSpec defines the desired state of Prescale.
+            properties:
+              percent:
+                description: |-
+                  Percentage to scale up by
+                  The following markers will use OpenAPI v3 schema to validate the value
+                  More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
+                format: int32
+                maximum: 100
+                minimum: 1
+                type: integer
+              schedule:
+                description: The schedule in Cron format, see https://en.wikipedia.org/wiki/Cron.
+                type: string
+              startingDeadlineSeconds:
+                description: |-
+                  Optional deadline in seconds for starting the job if it misses scheduled
+                  time for any reason.  Missed jobs executions will be counted as failed ones.
+                format: int64
+                minimum: 0
+                type: integer
+              suspend:
+                description: |-
+                  Suspend the prescaler
+                  The following markers will use OpenAPI v3 schema to validate the value
+                  More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
+                type: boolean
+              targetHpaName:
+                description: Name of the resource to scale
+                type: string
+            required:
+            - percent
+            - schedule
+            - suspend
+            - targetHpaName
+            type: object
+          status:
+            description: PrescaleStatus defines the observed state of Prescale.
+            properties:
+              lastOriginalSpecCpuUtilization:
+                description: LastOriginalSpecCpuUtilization is the last original spec
+                  cpu utilization
+                format: int32
+                type: integer
+              lastPrescaleSpecCpuUtilization:
+                description: LastPrescaleSpecCpuUtilization is the last prescale spec
+                  cpu utilization
+                format: int32
+                type: integer
+              lastScaledTime:
+                description: LastScaledTime is the last time the resource was scaled
+                format: date-time
+                type: string
+              orphanedSpecCpuUtilization:
+                description: OrphanedSpecCpuUtilization is the orphaned spec cpu utilization
+                  becaof failed hpa reverting
+                format: int32
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
