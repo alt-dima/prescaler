@@ -54,6 +54,12 @@ spec:
                 maximum: 100
                 minimum: 1
                 type: integer
+              revertWaitSeconds:
+                description: RevertWaitSeconds is the number of seconds to wait before
+                  reverting the scale
+                format: int64
+                minimum: 0
+                type: integer
               schedule:
                 description: The schedule in Cron format, see https://en.wikipedia.org/wiki/Cron.
                 type: string

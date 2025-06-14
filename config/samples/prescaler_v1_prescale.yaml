@@ -10,3 +10,4 @@ spec:
   schedule: "50,54 * * * *"
   percent: 50
   suspend: false
+  revertWaitSeconds: 10

@@ -54,6 +54,10 @@ type PrescaleSpec struct {
 	// time for any reason.  Missed jobs executions will be counted as failed ones.
 	// +optional
 	StartingDeadlineSeconds *int64 `json:"startingDeadlineSeconds,omitempty"`
+
+	// RevertWaitSeconds is the number of seconds to wait before reverting the scale
+	// +kubebuilder:validation:Minimum=0
+	RevertWaitSeconds *int64 `json:"revertWaitSeconds,omitempty"`
 }
 
 // PrescaleStatus defines the observed state of Prescale.

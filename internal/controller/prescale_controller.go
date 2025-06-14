@@ -251,8 +251,11 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
-	// Sleep for 10 seconds
-	time.Sleep(10 * time.Second)
+	// Sleep for revertWaitSeconds seconds
+	if prescaler.Spec.RevertWaitSeconds != nil {
+		log.Info("sleeping for revertWaitSeconds", "value", *prescaler.Spec.RevertWaitSeconds)
+		time.Sleep(time.Duration(*prescaler.Spec.RevertWaitSeconds) * time.Second)
+	}
 
 	// Re-fetch HPA for revert
 	if err := r.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: prescaler.Spec.TargetHpaName}, hpa); err != nil {
