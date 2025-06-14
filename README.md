@@ -28,18 +28,19 @@ In this case we have two options
 
 Important!
 If your SuperHeavyApp takes a lot of time to start:
-1. Increase `behavior.scaleDown.stabilizationWindowSeconds` from default 5 minutes (for example, 10 minutes)
+1. Increase `behavior.scaleDown.stabilizationWindowSeconds` from default 5 minutes (for example, to 10 minutes)
 2. Start prescaling earlier (for example, at `"51 * * * *"`)
 In this case you will provide 9 minutes before round hour for pods to become ready
 
-Example Prescale CR: config/samples/prescaler_v1_prescale.yaml
-Some details about Spec:
+[Example Prescale CR](config/samples/prescaler_v1_prescale.yaml): 
+```
 spec:
   targetHpaName: nginx-project - target HPA to scale, must be in the same namespace as Prescale CR
   schedule: "50,54 * * * *" - Cron shedule to trigger prescale
   percent: 50 - prectent to decrease `behavior.scaleDown.stabilizationWindowSeconds`
   suspend: false - enable/disable prescaler
   revertWaitSeconds: 10 - delay before reverting back `behavior.scaleDown.stabilizationWindowSeconds` to original value. It is important, because we must provide Kubernetes time to detect and react on HPA changes (to trigger scaleup desiredReplicas)
+```
 
 ## Getting Started
 
