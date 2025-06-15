@@ -78,7 +78,7 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		if err := r.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: prescaler.Spec.TargetHpaName}, hpa); err != nil {
 			log.Error(err, "failed to get HPA for orphaned revert")
 			r.Recorder.Event(&prescaler, corev1.EventTypeWarning, "FailedGetHPA", err.Error())
-			return ctrl.Result{}, nil
+			return ctrl.Result{}, client.IgnoreNotFound(err)
 		}
 		for index, metric := range hpa.Spec.Metrics {
 			if metric.Resource.Name == "cpu" && metric.Resource.Target.AverageUtilization != nil {
@@ -87,7 +87,7 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				if err != nil {
 					log.Error(err, "failed to update HPA for orphaned revert")
 					r.Recorder.Event(&prescaler, corev1.EventTypeWarning, "FailedUpdateHPA", err.Error())
-					return ctrl.Result{}, nil
+					return ctrl.Result{}, client.IgnoreNotFound(err)
 				}
 				break
 			}
@@ -95,13 +95,13 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// Re-fetch Prescale for status update orphanedSpecCpuUtilization to nil
 		if err := r.Get(ctx, req.NamespacedName, &prescaler); err != nil {
 			log.Error(err, "unable to re-fetch Prescaler for status update orphanedSpecCpuUtilization to nil")
-			return ctrl.Result{}, nil
+			return ctrl.Result{}, client.IgnoreNotFound(err)
 		}
 		prescaler.Status.OrphanedSpecCpuUtilization = nil
 		if err := r.Status().Update(ctx, &prescaler); err != nil {
 			log.Error(err, "Failed to update status to set orphanedSpecCpuUtilization to nil in orphaned revert")
 			r.Recorder.Event(&prescaler, corev1.EventTypeWarning, "FailedUpdateStatus", err.Error())
-			return ctrl.Result{}, nil
+			return ctrl.Result{}, client.IgnoreNotFound(err)
 		}
 	}
 
@@ -199,7 +199,7 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if err := r.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: prescaler.Spec.TargetHpaName}, hpa); err != nil {
 		log.Error(err, "failed to get hpa for prescale")
 		r.Recorder.Event(&prescaler, corev1.EventTypeWarning, "FailedGetHPA", err.Error())
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	// Find originalSpecCpuUtilization in HPA Spec Metrics for prescale
@@ -218,7 +218,8 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, nil
 	}
 
-	log.Info("originalSpecCpuUtilization", "value", originalSpecCpuUtilization)
+	currentStatusDesiredReplicas := hpa.Status.DesiredReplicas
+	log.Info("currentStatus", "originalSpecCpuUtilization", originalSpecCpuUtilization, "currentStatusDesiredReplicas", currentStatusDesiredReplicas)
 
 	prescaleSpecCpuUtilization := originalSpecCpuUtilization - int32(float64(originalSpecCpuUtilization)*float64(*prescaler.Spec.Percent)/100)
 
@@ -228,7 +229,7 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if err != nil {
 		log.Error(err, "failed to update hpa for prescale")
 		r.Recorder.Event(&prescaler, corev1.EventTypeWarning, "FailedUpdateHPA", err.Error())
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	log.Info("prescaleSpecCpuUtilization", "value", prescaleSpecCpuUtilization)
@@ -237,7 +238,7 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// Re-fetch Prescaler after prescale
 	if err := r.Get(ctx, req.NamespacedName, &prescaler); err != nil {
 		log.Error(err, "unable to re-fetch Prescaler after prescale")
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	prescaler.Status.LastScaledTime = &metav1.Time{Time: missedRun}
@@ -248,20 +249,46 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if err := r.Status().Update(ctx, &prescaler); err != nil {
 		log.Error(err, "Failed to update status after prescale")
 		r.Recorder.Event(&prescaler, corev1.EventTypeWarning, "FailedUpdateStatus", err.Error())
-		return ctrl.Result{}, err
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	// Sleep for revertWaitSeconds seconds
 	if prescaler.Spec.RevertWaitSeconds != nil {
-		log.Info("sleeping for revertWaitSeconds", "value", *prescaler.Spec.RevertWaitSeconds)
-		time.Sleep(time.Duration(*prescaler.Spec.RevertWaitSeconds) * time.Second)
+		log.Info("waiting for HPA to scale up to revertWaitSeconds", "value", *prescaler.Spec.RevertWaitSeconds)
+
+		startTime := time.Now()
+		timeout := time.Duration(*prescaler.Spec.RevertWaitSeconds) * time.Second
+
+		for {
+			// Check if we've exceeded the timeout
+			if time.Since(startTime) > timeout {
+				log.Info("timeout reached waiting for HPA to scale")
+				break
+			}
+
+			// Re-fetch HPA to check current status
+			if err := r.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: prescaler.Spec.TargetHpaName}, hpa); err != nil {
+				log.Error(err, "failed to re-fetch hpa while waiting for scale")
+				r.Recorder.Event(&prescaler, corev1.EventTypeWarning, "FailedGetHPA", err.Error())
+				return ctrl.Result{}, err
+			}
+
+			// Check if desired replicas has changed
+			if hpa.Status.DesiredReplicas > currentStatusDesiredReplicas {
+				log.Info("HPA has scaled, proceeding with revert", "desiredReplicas", hpa.Status.DesiredReplicas)
+				break
+			}
+
+			// Sleep for a short duration before next check
+			time.Sleep(3 * time.Second)
+		}
 	}
 
 	// Re-fetch HPA for revert
 	if err := r.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: prescaler.Spec.TargetHpaName}, hpa); err != nil {
 		log.Error(err, "failed to re-fetch hpa for revert")
 		r.Recorder.Event(&prescaler, corev1.EventTypeWarning, "FailedGetHPA", err.Error())
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, err
 	}
 
 	// Find cpu utilization index in HPA Spec Metrics for revert
@@ -284,16 +311,16 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if err != nil {
 		log.Error(err, "failed to update hpa for revert")
 		r.Recorder.Event(&prescaler, corev1.EventTypeWarning, "FailedUpdateHPA", err.Error())
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	log.Info("revertedSpecCpuUtilization", "value", originalSpecCpuUtilization)
-	r.Recorder.Event(&prescaler, corev1.EventTypeNormal, "Reverted", fmt.Sprintf("Successfully reverted HPA to %d%% CPU utilization", originalSpecCpuUtilization))
+	log.Info("RevertedStatus", "revertedSpecCpuUtilization", originalSpecCpuUtilization, "currentStatusDesiredReplicas", hpa.Status.DesiredReplicas)
+	r.Recorder.Event(&prescaler, corev1.EventTypeNormal, "Reverted", fmt.Sprintf("Successfully reverted HPA to %d%% CPU utilization and %d replicas", originalSpecCpuUtilization, hpa.Status.DesiredReplicas))
 
 	// Re-fetch Prescale for status update orphanedSpecCpuUtilization to nil
 	if err := r.Get(ctx, req.NamespacedName, &prescaler); err != nil {
 		log.Error(err, "unable to re-fetch Prescaler for status update orphanedSpecCpuUtilization to nil")
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	// Clear orphanedSpecCpuUtilization
@@ -301,7 +328,7 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if err := r.Status().Update(ctx, &prescaler); err != nil {
 		log.Error(err, "Failed to update status for status update orphanedSpecCpuUtilization to nil")
 		r.Recorder.Event(&prescaler, corev1.EventTypeWarning, "FailedUpdateStatus", err.Error())
-		return ctrl.Result{}, err
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	// we'll requeue once we see the running job, and update our status
