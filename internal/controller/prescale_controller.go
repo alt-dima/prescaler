@@ -338,7 +338,7 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	log.Info("RevertedStatus", "revertedSpecCpuUtilization", originalSpecCpuUtilization, "currentStatusDesiredReplicas", hpa.Status.DesiredReplicas, "originalScaleUpStabilizationWindowSeconds", originalScaleUpStabilizationWindowSeconds)
-	r.Recorder.Event(&prescaler, corev1.EventTypeNormal, "Reverted", fmt.Sprintf("Successfully reverted HPA to %d%% CPU utilization and %d replicas", originalSpecCpuUtilization, hpa.Status.DesiredReplicas))
+	r.Recorder.Event(&prescaler, corev1.EventTypeNormal, "Reverted", fmt.Sprintf("Successfully reverted HPA to %d%% CPU utilization and %d replicas", *originalSpecCpuUtilization, hpa.Status.DesiredReplicas))
 
 	// Re-fetch Prescale for status update orphaned fields to nil
 	if err := r.Get(ctx, req.NamespacedName, &prescaler); err != nil {
