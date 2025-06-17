@@ -28,7 +28,7 @@ In this case we have two options
 
 Important!
 If your SuperHeavyApp takes a lot of time to start:
-- Increase `behavior.scaleDown.stabilizationWindowSeconds` from default 5 minutes (for example, to 10 minutes)-
+- Increase `behavior.scaleDown.stabilizationWindowSeconds` from default 5 minutes (for example, to 10 minutes)
 - Start prescaling earlier (for example, at `"51 * * * *"`)
 In this case you will provide 9 minutes before round hour for pods to become ready
 
@@ -36,11 +36,13 @@ In this case you will provide 9 minutes before round hour for pods to become rea
 ```
 spec:
   targetHpaName: nginx-project - target HPA to scale, must be in the same namespace as Prescale CR
-  schedule: "50,54 * * * *" - Cron shedule to trigger prescale
-  percent: 50 - prectent to decrease `behavior.scaleDown.stabilizationWindowSeconds`
+  schedule: "55 * * * *" - Cron shedule to trigger prescale
+  percent: 70 - prectent to decrease CPU AverageUtilization from current/original CPU AverageUtilization (if current/original AverageUtilization=70, percent=70, then Prescaler will temporary set AverageUtilization=70-70%=21%)
   suspend: false - enable/disable prescaler
-  revertWaitSeconds: 10 - delay before reverting back `behavior.scaleDown.stabilizationWindowSeconds` to original value. It is important, because we must provide Kubernetes time to detect and react on HPA changes (to trigger scaleup desiredReplicas)
+  revertWaitSeconds: 40 - max wait time before reverting back to original values. It is important, because we must provide Kubernetes time to detect and react on HPA changes (to trigger scaleup desiredReplicas)
 ```
+
+P.S. Cron/schedule logic taken from [book.kubebuilder.io/cronjob-tutorial](https://book.kubebuilder.io/cronjob-tutorial/controller-implementation#5-get-the-next-scheduled-run)
 
 ## Getting Started
 
