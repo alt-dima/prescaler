@@ -73,6 +73,9 @@ type PrescaleStatus struct {
 
 	// OrphanedSpecCpuUtilization is the orphaned spec cpu utilization becaof failed hpa reverting
 	OrphanedSpecCpuUtilization *int32 `json:"orphanedSpecCpuUtilization,omitempty"`
+
+	// OrphanedScaleUpStabilizationWindowSeconds is the orphaned scale up stabilization window seconds because of failed hpa reverting
+	OrphanedScaleUpStabilizationWindowSeconds *int32 `json:"orphanedScaleUpStabilizationWindowSeconds,omitempty"`
 }
 
 // +kubebuilder:object:root=true

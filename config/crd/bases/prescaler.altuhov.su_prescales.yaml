@@ -96,6 +96,11 @@ spec:
                 description: LastScaledTime is the last time the resource was scaled
                 format: date-time
                 type: string
+              orphanedScaleUpStabilizationWindowSeconds:
+                description: OrphanedScaleUpStabilizationWindowSeconds is the orphaned
+                  scale up stabilization window seconds because of failed hpa reverting
+                format: int32
+                type: integer
               orphanedSpecCpuUtilization:
                 description: OrphanedSpecCpuUtilization is the orphaned spec cpu utilization
                   becaof failed hpa reverting

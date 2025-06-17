@@ -17,9 +17,9 @@ For example,
 In this case we have two options
 - Configure HPA to scale on 40% of CPU usage and `stabilizationWindowSeconds: 3600` so it will be upscaled most of the time with wasted resources/money
 - Use Prescaler! And configure Prescaler CR for SuperHeavyApp HPA/Deployment to prescale by +50% at `"56 * * * *"`, and Prescaler will at 8:56:00 do:
-  - Change HPA's CPU AverageUtilization from 70% to 35%
-  - HPA will begin scaling X2 from 10 to 20 pods, Prescaler will begin to wait 10 sec
-  - HPA scaled to 20 pods, Prescaler waited and reverts back HPA's CPU AverageUtilization to 70%
+  - Change HPA's CPU AverageUtilization from 70% to 35% and hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds = 0 (to scaleUp now)
+  - HPA will begin scaling X2 from 10 to 20 pods, Prescaler will begin to wait XX sec
+  - HPA scaled to 20 pods, Prescaler waited and reverts back HPA's CPU AverageUtilization and hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds to original values
   - HPA remains upscaled (real usage remains 35% among 20 pods) up to `behavior.scaleDown.stabilizationWindowSeconds`, which by default is 5 minutes
   - At round hour (9:00:00) you receive a spike of traffic and cpu usage naturally increase to expected 70% (among 20 pods)
   - If the spike continue, HPA will not scale down, event continue to natively scale up
