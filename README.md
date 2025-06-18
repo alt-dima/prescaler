@@ -17,10 +17,10 @@ For example,
 In this case we have two options
 - Configure HPA to scale on 40% of CPU usage and `stabilizationWindowSeconds: 3600` so it will be upscaled most of the time with wasted resources/money
 - Use Prescaler! And configure Prescaler CR for SuperHeavyApp HPA/Deployment to prescale by +50% at `"56 * * * *"`, and Prescaler will at 8:56:00 do:
-  - Change HPA's CPU AverageUtilization from 70% to 35% and hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds = 0 (to scaleUp now)
+  - Change HPA's CPU AverageUtilization from 70% to 35% and hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds = 0 (to scaleUp right now)
   - HPA will begin scaling X2 from 10 to 20 pods, Prescaler will begin to wait XX sec
   - HPA scaled to 20 pods, Prescaler waited and reverts back HPA's CPU AverageUtilization and hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds to original values
-  - HPA remains upscaled (real usage remains 35% among 20 pods) up to `behavior.scaleDown.stabilizationWindowSeconds`, which by default is 5 minutes
+  - HPA remains upscaled (real usage remains 35% among 20 pods) up to `behavior.scaleDown.stabilizationWindowSeconds`, which **better to increase to 10 minutes** (default is 5 minutes)
   - At round hour (9:00:00) you receive a spike of traffic and cpu usage naturally increase to expected 70% (among 20 pods)
   - If the spike continue, HPA will not scale down, event continue to natively scale up
   - If the spike ends, HPA will scale down after spike ends (spike ended at 9:03:00 +5 minutes => at 9:08:00 hpa scales down)
@@ -28,7 +28,7 @@ In this case we have two options
 
 Important!
 If your SuperHeavyApp takes a lot of time to start:
-- Increase `behavior.scaleDown.stabilizationWindowSeconds` from default 5 minutes (for example, to 10 minutes)
+- Increase `behavior.scaleDown.stabilizationWindowSeconds` from recommended 10 minutes (for example, to 20 minutes)
 - Start prescaling earlier (for example, at `"51 * * * *"`)
 In this case you will provide 9 minutes before round hour for pods to become ready
 
