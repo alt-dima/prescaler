@@ -1,30 +1,32 @@
 # Prescaler
-Prescale/ScaleUp your HPAs in Kubernetes minutes before regular spikes of load/traffic (like on round hours) and let HPA do the rest after (to continue scale up or scale down after spike)
+Prescaler allows you to proactively scale up your Kubernetes HPAs minutes before anticipated spikes in load or traffic, such as those occurring on the hour. After this initial prescaling, your HPA will manage subsequent scaling, either continuing to scale up or scaling down once the spike has passed.
 
 ## Description
-Imagine you have a Deployment of SuperHeavyApp in your Kubernetes with 10 replicas and HPA.
-Every hour you have short/fast/temporary spike of traffic that requires to scale SuperHeavyApp up to +50% of pods.
-For example,
-- At 8:30:00 = 10 SuperHeavyApp ready pods, HPA at 70% from 2000mCPU among 10 pods
-- At 8:55:00 = 10 SuperHeavyApp ready pods, HPA at 70% from 2000mCPU among 10 pods
-- At 9:00:00 = 10 SuperHeavyApp ready pods, HPA at 140% from 2000mCPU among 10 pods, spike of traffic begins
-- At 9:00:30 = HPA triggers to scale +10 pods, clients get throttled/distrupted (getting 503/504)
-- At 9:02:00 = 10 SuperHeavyApp ready pods, 10 pods in pending state waiting for node, HPA at 140% from 2000mCPU among 10 pods, spike of traffic ends
-- At 9:03:00 = New node added to cluster (by Karpenter/CA), 10 new pods become available, HPA at 70% from 2000mCPU among 20 pods
-- !?!?!?
-- At 9:08:00 = HPA scales back to 10 SuperHeavyApp pods, HPA at 70% from 2000mCPU among 10 pods
+Imagine you have a Kubernetes deployment of `SuperHeavyApp` with 10 replicas and an associated **Horizontal Pod Autoscaler (HPA)**.
+Every hour, your application experiences a brief, intense traffic spike that necessitates scaling `SuperHeavyApp` up by 50% (requiring 5 additional pods).
 
-In this case we have two options
-- Configure HPA to scale on 40% of CPU usage and `stabilizationWindowSeconds: 3600` so it will be upscaled most of the time with wasted resources/money
-- Use Prescaler! And configure Prescaler CR for SuperHeavyApp HPA/Deployment to prescale by +50% at `"56 * * * *"`, and Prescaler will at 8:56:00 do:
-  - Change HPA's CPU AverageUtilization from 70% to 35% and hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds = 0 (to scaleUp right now)
-  - HPA will begin scaling X2 from 10 to 20 pods, Prescaler will begin to wait XX sec
-  - HPA scaled to 20 pods, Prescaler waited and reverts back HPA's CPU AverageUtilization and hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds to original values
-  - HPA remains upscaled (real usage remains 35% among 20 pods) up to `behavior.scaleDown.stabilizationWindowSeconds`, which **better to increase to 10 minutes** (default is 5 minutes)
-  - At round hour (9:00:00) you receive a spike of traffic and cpu usage naturally increase to expected 70% (among 20 pods)
-  - If the spike continue, HPA will not scale down, event continue to natively scale up
-  - If the spike ends, HPA will scale down after spike ends (spike ended at 9:03:00 +5 minutes => at 9:08:00 hpa scales down)
-  - And so on for every round hour
+Here's how a typical scenario might unfold:
+
+- **8:30:00:** You have 10 `SuperHeavyApp` pods ready, with HPA at 70% CPU utilization (based on 2000mCPU across 10 pods).
+- **8:55:00:** Still 10 `SuperHeavyApp` pods ready, HPA remains at 70% CPU utilization.
+- **9:00:00:** The traffic spike begins. You still have 10 `SuperHeavyApp` pods ready, but HPA CPU utilization jumps to 140%.
+- **9:00:30:** HPA triggers a scale-up of 10 additional pods. However, clients experience throttling or disruptions (receiving 503/504 errors) due to the delay.
+- **9:02:00:** The traffic spike ends. You have 10 `SuperHeavyApp` pods ready, but 10 new pods are stuck in a pending state, waiting for a new node. HPA is still at 140% CPU utilization (among the initial 10 pods).
+- **9:03:00:** A new node is added to the cluster (by Karpenter/Cluster Autoscaler), and the 10 new pods become available. HPA now shows 70% CPU utilization (among 20 pods).
+- **!?!?!?**
+- **9:08:00:** HPA scales back down to 10 `SuperHeavyApp` pods, with CPU utilization at 70% (among the 10 pods).
+
+## In this case we have two options:
+- Configure **Horizontal Pod Autoscaler (HPA)** to scale based on **40% CPU usage** with a `stabilizationWindowSeconds` of `3600`. This will keep it upscaled most of the time, leading to wasted resources and money.
+- Use **Prescaler**. For the `SuperHeavyApp` HPA/Deployment, configure Prescaler's Custom Resource (CR) to prescale by **+50% at "56 * * * *"**. At 8:56:00, Prescaler will:
+    - Change HPA's CPU `averageUtilization` from 70% to 35% and set `hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds` to 0 (for immediate scale-up).
+    - HPA will start scaling up from 10 to 20 pods (2x). Prescaler will then wait for XX seconds.
+    - Once HPA has scaled to 20 pods, Prescaler will revert HPA's CPU `averageUtilization` and `hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds` to their original values.
+    - HPA will remain upscaled (with real usage at 35% across 20 pods) until `behavior.scaleDown.stabilizationWindowSeconds`. **It's better to increase this to 10 minutes** (the default is 5 minutes).
+    - At the top of the hour (9:00:00), you'll experience a traffic spike, and CPU usage will naturally increase to the expected 70% (across 20 pods).
+    - If the spike continues, HPA will not scale down; it will even continue to scale up natively.
+    - If the spike ends, HPA will scale down after it concludes (e.g., if the spike ends at 9:03:00, HPA scales down at 9:08:00, i.e., 9:03:00 + 5 minutes).
+    - This process repeats for every hour.
 
 Important!
 If your SuperHeavyApp takes a lot of time to start:
@@ -42,7 +44,7 @@ spec:
   revertWaitSeconds: 40 - max wait time before reverting back to original values. It is important, because we must provide Kubernetes time to detect and react on HPA changes (to trigger scaleup desiredReplicas)
 ```
 
-P.S. Cron/schedule logic taken from [book.kubebuilder.io/cronjob-tutorial](https://book.kubebuilder.io/cronjob-tutorial/controller-implementation#5-get-the-next-scheduled-run)
+P.S. Cron/schedule logic was taken from [book.kubebuilder.io/cronjob-tutorial](https://book.kubebuilder.io/cronjob-tutorial/controller-implementation#5-get-the-next-scheduled-run)
 
 ## Getting Started
 
