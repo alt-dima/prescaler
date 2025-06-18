@@ -34,6 +34,8 @@ If your SuperHeavyApp takes a lot of time to start:
 - Start prescaling earlier (for example, at `"51 * * * *"`)
 In this case you will provide 9 minutes before round hour for pods to become ready
 
+[Helm Chart](dist/chart)
+
 [Example Prescale CR](config/samples/prescaler_v1_prescale.yaml): 
 ```
 spec:
