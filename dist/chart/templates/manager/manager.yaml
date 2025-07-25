@@ -43,6 +43,12 @@ spec:
             - name: {{ $key }}
               value: {{ $value }}
             {{- end }}
+            - name: MAX_CONCURRENT_RECONCILES
+              value: {{ .Values.controllerManager.maxConcurrentReconciles | quote }}
+          {{- else }}
+          env:
+            - name: MAX_CONCURRENT_RECONCILES
+              value: {{ .Values.controllerManager.maxConcurrentReconciles | quote }}
           {{- end }}
           livenessProbe:
             {{- toYaml .Values.controllerManager.container.livenessProbe | nindent 12 }}

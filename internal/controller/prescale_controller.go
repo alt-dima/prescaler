@@ -19,6 +19,9 @@ package controller
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/robfig/cron"
@@ -29,16 +32,48 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	prescalerv1 "github.com/alt-dima/prescaler/api/v1"
 )
+
+const cpuResourceName = "cpu"
 
 // PrescaleReconciler reconciles a Prescale object
 type PrescaleReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+	// hpaProcessing tracks which HPA is currently being processed to prevent race conditions
+	hpaProcessing sync.Map
+}
+
+// acquireHPALock attempts to acquire a lock for processing a specific HPA
+// Returns true if lock was acquired, false if HPA is already being processed
+func (r *PrescaleReconciler) acquireHPALock(hpaKey string) bool {
+	_, loaded := r.hpaProcessing.LoadOrStore(hpaKey, time.Now())
+	return !loaded
+}
+
+// releaseHPALock releases the lock for a specific HPA
+func (r *PrescaleReconciler) releaseHPALock(hpaKey string) {
+	r.hpaProcessing.Delete(hpaKey)
+}
+
+// cleanupStaleLocks removes locks that have been held for too long (deadlock prevention)
+func (r *PrescaleReconciler) cleanupStaleLocks() {
+	now := time.Now()
+	r.hpaProcessing.Range(func(key, value interface{}) bool {
+		if lockTime, ok := value.(time.Time); ok {
+			if now.Sub(lockTime) > 5*time.Minute {
+				logf.Log.Info("Cleaning up stale HPA lock", "hpaKey", key, "lockDuration", now.Sub(lockTime))
+				r.hpaProcessing.Delete(key)
+			}
+		}
+		return true
+	})
 }
 
 // +kubebuilder:rbac:groups=prescaler.altuhov.su,resources=prescales,verbs=get;list;watch;create;update;patch;delete
@@ -61,6 +96,11 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	log.Info("Starting Reconcile")
 
+	// Periodic cleanup of stale locks (every 100 reconciliations to avoid performance impact)
+	if req.Name != "" && len(req.Name)%100 == 0 {
+		r.cleanupStaleLocks()
+	}
+
 	// Fetch the Prescaler instance
 	prescaler := prescalerv1.Prescale{}
 	if err := r.Get(ctx, req.NamespacedName, &prescaler); err != nil {
@@ -71,53 +111,124 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	prescaleSpecCpuUtilizationOrphaned := prescaler.Status.OrphanedSpecCpuUtilization
-	prescaleSpecScaleUpStabilizationWindowSecondsOrphaned := prescaler.Status.OrphanedScaleUpStabilizationWindowSeconds
-	if prescaleSpecCpuUtilizationOrphaned != nil || prescaleSpecScaleUpStabilizationWindowSecondsOrphaned != nil {
-		//found orphaned prescale need to revert in hpa
-		hpa := &autoscalingv2.HorizontalPodAutoscaler{}
-		if err := r.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: prescaler.Spec.TargetHpaName}, hpa); err != nil {
-			log.Error(err, "failed to get HPA for orphaned revert")
-			r.Recorder.Event(&prescaler, corev1.EventTypeWarning, "FailedGetHPA", err.Error())
-			return ctrl.Result{}, client.IgnoreNotFound(err)
-		}
+	// Per-HPA concurrency control: prevent multiple reconciliations from processing the same HPA
+	hpaKey := fmt.Sprintf("%s/%s", req.Namespace, prescaler.Spec.TargetHpaName)
+	if !r.acquireHPALock(hpaKey) {
+		log.V(1).Info("HPA is already being processed by another reconciliation, requeuing", "hpaKey", hpaKey)
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+	defer r.releaseHPALock(hpaKey)
 
-		if prescaleSpecScaleUpStabilizationWindowSecondsOrphaned != nil {
-			hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds = prescaleSpecScaleUpStabilizationWindowSecondsOrphaned
-		}
-		if prescaleSpecCpuUtilizationOrphaned != nil {
-			for index, metric := range hpa.Spec.Metrics {
-				if metric.Resource.Name == "cpu" && metric.Resource.Target.AverageUtilization != nil {
-					hpa.Spec.Metrics[index].Resource.Target.AverageUtilization = prescaleSpecCpuUtilizationOrphaned
-					break
-				}
-			}
-		}
-
-		err := r.Update(ctx, hpa)
-		if err != nil {
-			log.Error(err, "failed to update HPA for orphaned revert")
-			r.Recorder.Event(&prescaler, corev1.EventTypeWarning, "FailedUpdateHPA", err.Error())
-			return ctrl.Result{}, client.IgnoreNotFound(err)
-		}
-		// Re-fetch Prescale for status update orphanedSpecCpuUtilization to nil
-		if err := r.Get(ctx, req.NamespacedName, &prescaler); err != nil {
-			log.Error(err, "unable to re-fetch Prescaler for status update orphanedSpecCpuUtilization to nil")
-			return ctrl.Result{}, client.IgnoreNotFound(err)
-		}
-		prescaler.Status.OrphanedSpecCpuUtilization = nil
-		prescaler.Status.OrphanedScaleUpStabilizationWindowSeconds = nil
-		if err := r.Status().Update(ctx, &prescaler); err != nil {
-			log.Error(err, "Failed to update status to set orphanedSpecCpuUtilization to nil in orphaned revert")
-			r.Recorder.Event(&prescaler, corev1.EventTypeWarning, "FailedUpdateStatus", err.Error())
-			return ctrl.Result{}, client.IgnoreNotFound(err)
-		}
+	// Handle orphaned prescale state
+	if err := r.handleOrphanedState(ctx, req, &prescaler); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	if prescaler.Spec.Suspend != nil && *prescaler.Spec.Suspend {
 		log.V(1).Info("prescaler suspended, skipping")
 		return ctrl.Result{}, nil
 	}
+
+	// Process schedules and find next run
+	scheduleResult := r.processSchedules(ctx, &prescaler)
+
+	if scheduleResult.shouldSleep {
+		return scheduleResult.result, nil
+	}
+
+	// Execute prescale operation
+	if err := r.executePrescale(ctx, req, &prescaler, scheduleResult); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Wait for HPA to scale if needed
+	if err := r.waitForScale(ctx, req, &prescaler, scheduleResult.currentDesiredReplicas); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Revert HPA changes
+	if err := r.revertHPA(ctx, req, &prescaler, scheduleResult); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Clear orphaned fields
+	if err := r.clearOrphanedFields(ctx, req, &prescaler); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	return scheduleResult.result, nil
+}
+
+// ScheduleResult holds the result of schedule processing
+type ScheduleResult struct {
+	shouldSleep                               bool
+	result                                    ctrl.Result
+	bestMissed                                time.Time
+	bestMissedSchedule                        *prescalerv1.PrescaleSchedule
+	currentDesiredReplicas                    int32
+	originalSpecCpuUtilization                *int32
+	originalScaleUpStabilizationWindowSeconds *int32
+	originalSpecCpuUtilizationIndex           int
+}
+
+// handleOrphanedState handles the case where there are orphaned prescale settings
+func (r *PrescaleReconciler) handleOrphanedState(ctx context.Context, req ctrl.Request, prescaler *prescalerv1.Prescale) error {
+	log := logf.FromContext(ctx)
+
+	prescaleSpecCpuUtilizationOrphaned := prescaler.Status.OrphanedSpecCpuUtilization
+	prescaleSpecScaleUpStabilizationWindowSecondsOrphaned := prescaler.Status.OrphanedScaleUpStabilizationWindowSeconds
+
+	if prescaleSpecCpuUtilizationOrphaned == nil && prescaleSpecScaleUpStabilizationWindowSecondsOrphaned == nil {
+		return nil
+	}
+
+	// found orphaned prescale need to revert in hpa
+	hpa := &autoscalingv2.HorizontalPodAutoscaler{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: prescaler.Spec.TargetHpaName}, hpa); err != nil {
+		log.Error(err, "failed to get HPA for orphaned revert")
+		r.Recorder.Event(prescaler, corev1.EventTypeWarning, "FailedGetHPA", err.Error())
+		return client.IgnoreNotFound(err)
+	}
+
+	if prescaleSpecScaleUpStabilizationWindowSecondsOrphaned != nil {
+		hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds = prescaleSpecScaleUpStabilizationWindowSecondsOrphaned
+	}
+	if prescaleSpecCpuUtilizationOrphaned != nil {
+		for index, metric := range hpa.Spec.Metrics {
+			if metric.Resource.Name == cpuResourceName && metric.Resource.Target.AverageUtilization != nil {
+				hpa.Spec.Metrics[index].Resource.Target.AverageUtilization = prescaleSpecCpuUtilizationOrphaned
+				break
+			}
+		}
+	}
+
+	if err := r.Update(ctx, hpa); err != nil {
+		log.Error(err, "failed to update HPA for orphaned revert")
+		r.Recorder.Event(prescaler, corev1.EventTypeWarning, "FailedUpdateHPA", err.Error())
+		return client.IgnoreNotFound(err)
+	}
+
+	// Re-fetch Prescale for status update orphanedSpecCpuUtilization to nil
+	if err := r.Get(ctx, req.NamespacedName, prescaler); err != nil {
+		log.Error(err, "unable to re-fetch Prescaler for status update orphanedSpecCpuUtilization to nil")
+		return client.IgnoreNotFound(err)
+	}
+
+	prescaler.Status.OrphanedSpecCpuUtilization = nil
+	prescaler.Status.OrphanedScaleUpStabilizationWindowSeconds = nil
+
+	if err := r.Status().Update(ctx, prescaler); err != nil {
+		log.Error(err, "Failed to update status to set orphanedSpecCpuUtilization to nil in orphaned revert")
+		r.Recorder.Event(prescaler, corev1.EventTypeWarning, "FailedUpdateStatus", err.Error())
+		return client.IgnoreNotFound(err)
+	}
+
+	return nil
+}
+
+// processSchedules processes all schedules and determines the next run
+func (r *PrescaleReconciler) processSchedules(ctx context.Context, prescaler *prescalerv1.Prescale) *ScheduleResult {
+	log := logf.FromContext(ctx)
 
 	now := time.Now()
 	var bestNext time.Time
@@ -131,18 +242,21 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			// skip invalid cron
 			continue
 		}
+
 		var earliestTime time.Time
 		if prescaler.Status.LastScaledTime != nil {
 			earliestTime = prescaler.Status.LastScaledTime.Time
 		} else {
 			earliestTime = prescaler.CreationTimestamp.Time
 		}
+
 		if prescaler.Spec.StartingDeadlineSeconds != nil {
 			schedulingDeadline := now.Add(-time.Second * time.Duration(*prescaler.Spec.StartingDeadlineSeconds))
 			if schedulingDeadline.After(earliestTime) {
 				earliestTime = schedulingDeadline
 			}
 		}
+
 		if earliestTime.After(now) {
 			next := cronSched.Next(now)
 			if bestNext.IsZero() || next.Before(bestNext) {
@@ -150,6 +264,7 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			}
 			continue
 		}
+
 		starts := 0
 		var lastMissed time.Time
 		for t := cronSched.Next(earliestTime); !t.After(now); t = cronSched.Next(t) {
@@ -159,6 +274,7 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				break
 			}
 		}
+
 		next := cronSched.Next(now)
 		if !lastMissed.IsZero() {
 			if bestMissed.IsZero() || lastMissed.After(bestMissed) {
@@ -166,6 +282,7 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				bestMissedSchedule = sched
 			}
 		}
+
 		if bestNext.IsZero() || next.Before(bestNext) {
 			bestNext = next
 		}
@@ -176,7 +293,7 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	if bestMissed.IsZero() {
 		log.V(1).Info("no upcoming scheduled times, sleeping until next")
-		return scheduledResult, nil
+		return &ScheduleResult{shouldSleep: true, result: scheduledResult}
 	}
 
 	// make sure we're not too late to start the run
@@ -186,24 +303,36 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		tooLate = bestMissed.Add(time.Duration(*prescaler.Spec.StartingDeadlineSeconds) * time.Second).Before(now)
 	}
 	if tooLate {
-		r.Recorder.Event(&prescaler, corev1.EventTypeNormal, "MissedStartingDeadline", "missed starting deadline for last run, sleeping till next")
+		r.Recorder.Event(prescaler, corev1.EventTypeNormal, "MissedStartingDeadline", "missed starting deadline for last run, sleeping till next")
 		log.V(1).Info("missed starting deadline for last run, sleeping till next")
-		return scheduledResult, nil
+		return &ScheduleResult{shouldSleep: true, result: scheduledResult}
 	}
+
+	return &ScheduleResult{
+		shouldSleep:        false,
+		result:             scheduledResult,
+		bestMissed:         bestMissed,
+		bestMissedSchedule: bestMissedSchedule,
+	}
+}
+
+// executePrescale executes the prescale operation
+func (r *PrescaleReconciler) executePrescale(ctx context.Context, req ctrl.Request, prescaler *prescalerv1.Prescale, scheduleResult *ScheduleResult) error {
+	log := logf.FromContext(ctx)
 
 	hpa := &autoscalingv2.HorizontalPodAutoscaler{}
 	if err := r.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: prescaler.Spec.TargetHpaName}, hpa); err != nil {
 		log.Error(err, "failed to get hpa for prescale")
-		r.Recorder.Event(&prescaler, corev1.EventTypeWarning, "FailedGetHPA", err.Error())
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		r.Recorder.Event(prescaler, corev1.EventTypeWarning, "FailedGetHPA", err.Error())
+		return client.IgnoreNotFound(err)
 	}
 
 	// Find originalSpecCpuUtilization in HPA Spec Metrics for prescale
 	var originalSpecCpuUtilization *int32
 	var originalScaleUpStabilizationWindowSeconds *int32
-	var originalSpecCpuUtilizationIndex int = -1
+	var originalSpecCpuUtilizationIndex = -1
 	for index, metric := range hpa.Spec.Metrics {
-		if metric.Resource.Name == "cpu" && metric.Resource.Target.AverageUtilization != nil {
+		if metric.Resource.Name == cpuResourceName && metric.Resource.Target.AverageUtilization != nil {
 			originalSpecCpuUtilization = metric.Resource.Target.AverageUtilization
 			originalSpecCpuUtilizationIndex = index
 			break
@@ -216,33 +345,39 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	if originalSpecCpuUtilizationIndex == -1 {
 		log.Error(fmt.Errorf("failed to find cpu utilization index in HPA for prescale"), "originalSpecCpuUtilizationIndex is -1")
-		r.Recorder.Event(&prescaler, corev1.EventTypeWarning, "FailedFindCPUUtilizationIndex", "originalSpecCpuUtilizationIndex is -1")
-		return ctrl.Result{}, nil
+		r.Recorder.Event(prescaler, corev1.EventTypeWarning, "FailedFindCPUUtilizationIndex", "originalSpecCpuUtilizationIndex is -1")
+		return nil
 	}
 
 	currentStatusDesiredReplicas := hpa.Status.DesiredReplicas
 	log.Info("currentStatus", "originalSpecCpuUtilization", originalSpecCpuUtilization, "currentStatusDesiredReplicas", currentStatusDesiredReplicas, "originalScaleUpStabilizationWindowSeconds", originalScaleUpStabilizationWindowSeconds)
 
+	// Store values in scheduleResult for later use
+	scheduleResult.currentDesiredReplicas = currentStatusDesiredReplicas
+	scheduleResult.originalSpecCpuUtilization = originalSpecCpuUtilization
+	scheduleResult.originalScaleUpStabilizationWindowSeconds = originalScaleUpStabilizationWindowSeconds
+	scheduleResult.originalSpecCpuUtilizationIndex = originalSpecCpuUtilizationIndex
+
 	// Use the percent from the selected schedule
-	percent := bestMissedSchedule.Percent
+	percent := scheduleResult.bestMissedSchedule.Percent
 	prescaleSpecCpuUtilization := *originalSpecCpuUtilization - int32(float64(*originalSpecCpuUtilization)*float64(percent)/100)
 
 	// Re-fetch Prescaler for status update
-	if err := r.Get(ctx, req.NamespacedName, &prescaler); err != nil {
+	if err := r.Get(ctx, req.NamespacedName, prescaler); err != nil {
 		log.Error(err, "unable to re-fetch Prescaler after prescale")
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		return client.IgnoreNotFound(err)
 	}
 
-	prescaler.Status.LastScaledTime = &metav1.Time{Time: bestMissed}
+	prescaler.Status.LastScaledTime = &metav1.Time{Time: scheduleResult.bestMissed}
 	prescaler.Status.LastPrescaleSpecCpuUtilization = prescaleSpecCpuUtilization
 	prescaler.Status.LastOriginalSpecCpuUtilization = *originalSpecCpuUtilization
 	prescaler.Status.OrphanedSpecCpuUtilization = originalSpecCpuUtilization
 	prescaler.Status.OrphanedScaleUpStabilizationWindowSeconds = originalScaleUpStabilizationWindowSeconds
 
-	if err := r.Status().Update(ctx, &prescaler); err != nil {
+	if err := r.Status().Update(ctx, prescaler); err != nil {
 		log.Error(err, "Failed to update status for prescale status update")
-		r.Recorder.Event(&prescaler, corev1.EventTypeWarning, "FailedUpdateStatus", err.Error())
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		r.Recorder.Event(prescaler, corev1.EventTypeWarning, "FailedUpdateStatus", err.Error())
+		return client.IgnoreNotFound(err)
 	}
 
 	// Prescale HPA Spec Metrics CPU AverageUtilization to prescaleSpecCpuUtilization
@@ -253,103 +388,140 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 	if err := r.Update(ctx, hpa); err != nil {
 		log.Error(err, "failed to update hpa for prescale")
-		r.Recorder.Event(&prescaler, corev1.EventTypeWarning, "FailedUpdateHPA", err.Error())
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		r.Recorder.Event(prescaler, corev1.EventTypeWarning, "FailedUpdateHPA", err.Error())
+		return client.IgnoreNotFound(err)
 	}
 
 	log.Info("prescaleSpecCpuUtilization", "value", prescaleSpecCpuUtilization)
-	r.Recorder.Event(&prescaler, corev1.EventTypeNormal, "Prescaled", fmt.Sprintf("Successfully prescaled HPA to %d%% CPU utilization", prescaleSpecCpuUtilization))
+	r.Recorder.Event(prescaler, corev1.EventTypeNormal, "Prescaled", fmt.Sprintf("Successfully prescaled HPA to %d%% CPU utilization, currently %d replicas, %d%%", prescaleSpecCpuUtilization, currentStatusDesiredReplicas, percent))
 
-	// Sleep for revertWaitSeconds seconds
-	if prescaler.Spec.RevertWaitSeconds != nil {
-		log.Info("waiting for HPA to scale up to revertWaitSeconds", "value", *prescaler.Spec.RevertWaitSeconds)
+	return nil
+}
 
-		startTime := time.Now()
-		timeout := time.Duration(*prescaler.Spec.RevertWaitSeconds) * time.Second
+// waitForScale waits for the HPA to scale up
+func (r *PrescaleReconciler) waitForScale(ctx context.Context, req ctrl.Request, prescaler *prescalerv1.Prescale, currentStatusDesiredReplicas int32) error {
+	log := logf.FromContext(ctx)
 
-		for {
-			// Check if we've exceeded the timeout
-			if time.Since(startTime) > timeout {
-				log.Info("timeout reached waiting for HPA to scale")
-				break
-			}
-
-			// Re-fetch HPA to check current status
-			if err := r.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: prescaler.Spec.TargetHpaName}, hpa); err != nil {
-				log.Error(err, "failed to re-fetch hpa while waiting for scale")
-				r.Recorder.Event(&prescaler, corev1.EventTypeWarning, "FailedGetHPA", err.Error())
-				return ctrl.Result{}, err
-			}
-
-			// Check if desired replicas has changed
-			if hpa.Status.DesiredReplicas > currentStatusDesiredReplicas {
-				log.Info("HPA has scaled, proceeding with revert", "desiredReplicas", hpa.Status.DesiredReplicas)
-				break
-			}
-
-			// Sleep for a short duration before next check
-			time.Sleep(3 * time.Second)
-		}
+	if prescaler.Spec.RevertWaitSeconds == nil {
+		return nil
 	}
 
+	log.Info("waiting for HPA to scale up to revertWaitSeconds", "value", *prescaler.Spec.RevertWaitSeconds)
+
+	startTime := time.Now()
+	timeout := time.Duration(*prescaler.Spec.RevertWaitSeconds) * time.Second
+
+	for {
+		// Check if we've exceeded the timeout
+		if time.Since(startTime) > timeout {
+			log.Info("timeout reached waiting for HPA to scale")
+			break
+		}
+
+		// Re-fetch HPA to check current status
+		hpa := &autoscalingv2.HorizontalPodAutoscaler{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: prescaler.Spec.TargetHpaName}, hpa); err != nil {
+			log.Error(err, "failed to re-fetch hpa while waiting for scale")
+			r.Recorder.Event(prescaler, corev1.EventTypeWarning, "FailedGetHPA", err.Error())
+			return err
+		}
+
+		// Check if desired replicas has changed
+		if hpa.Status.DesiredReplicas > currentStatusDesiredReplicas {
+			log.Info("HPA has scaled, proceeding with revert", "desiredReplicas", hpa.Status.DesiredReplicas)
+			break
+		}
+
+		// Sleep for a short duration before next check
+		time.Sleep(3 * time.Second)
+	}
+
+	return nil
+}
+
+// revertHPA reverts the HPA changes back to original values
+func (r *PrescaleReconciler) revertHPA(ctx context.Context, req ctrl.Request, prescaler *prescalerv1.Prescale, scheduleResult *ScheduleResult) error {
+	log := logf.FromContext(ctx)
+
 	// Re-fetch HPA for revert
+	hpa := &autoscalingv2.HorizontalPodAutoscaler{}
 	if err := r.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: prescaler.Spec.TargetHpaName}, hpa); err != nil {
 		log.Error(err, "failed to re-fetch hpa for revert")
-		r.Recorder.Event(&prescaler, corev1.EventTypeWarning, "FailedGetHPA", err.Error())
-		return ctrl.Result{}, err
+		r.Recorder.Event(prescaler, corev1.EventTypeWarning, "FailedGetHPA", err.Error())
+		return err
 	}
 
 	// Find cpu utilization index in HPA Spec Metrics for revert
-	var currentSpecCpuUtilizationIndex int = -1
+	var currentSpecCpuUtilizationIndex = -1
 	for index, metric := range hpa.Spec.Metrics {
-		if metric.Resource.Name == "cpu" && metric.Resource.Target.AverageUtilization != nil {
+		if metric.Resource.Name == cpuResourceName && metric.Resource.Target.AverageUtilization != nil {
 			currentSpecCpuUtilizationIndex = index
 			break
 		}
 	}
 	if currentSpecCpuUtilizationIndex == -1 {
 		log.Error(fmt.Errorf("failed to find cpu utilization index in HPA for revert"), "currentSpecCpuUtilizationIndex is -1")
-		r.Recorder.Event(&prescaler, corev1.EventTypeWarning, "FailedFindCPUUtilizationIndex", "currentSpecCpuUtilizationIndex is -1")
-		return ctrl.Result{}, nil
+		r.Recorder.Event(prescaler, corev1.EventTypeWarning, "FailedFindCPUUtilizationIndex", "currentSpecCpuUtilizationIndex is -1")
+		return nil
 	}
 
 	// Revert HPA Spec Metrics to originalSpecCpuUtilization
-	hpa.Spec.Metrics[currentSpecCpuUtilizationIndex].Resource.Target.AverageUtilization = originalSpecCpuUtilization
-	if originalScaleUpStabilizationWindowSeconds != nil {
-		hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds = originalScaleUpStabilizationWindowSeconds
+	hpa.Spec.Metrics[currentSpecCpuUtilizationIndex].Resource.Target.AverageUtilization = scheduleResult.originalSpecCpuUtilization
+	if scheduleResult.originalScaleUpStabilizationWindowSeconds != nil {
+		hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds = scheduleResult.originalScaleUpStabilizationWindowSeconds
 	}
 	if err := r.Update(ctx, hpa); err != nil {
 		log.Error(err, "failed to update hpa for revert")
-		r.Recorder.Event(&prescaler, corev1.EventTypeWarning, "FailedUpdateHPA", err.Error())
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		r.Recorder.Event(prescaler, corev1.EventTypeWarning, "FailedUpdateHPA", err.Error())
+		return client.IgnoreNotFound(err)
 	}
 
-	log.Info("RevertedStatus", "revertedSpecCpuUtilization", originalSpecCpuUtilization, "currentStatusDesiredReplicas", hpa.Status.DesiredReplicas, "originalScaleUpStabilizationWindowSeconds", originalScaleUpStabilizationWindowSeconds)
-	r.Recorder.Event(&prescaler, corev1.EventTypeNormal, "Reverted", fmt.Sprintf("Successfully reverted HPA to %d%% CPU utilization and %d replicas", *originalSpecCpuUtilization, hpa.Status.DesiredReplicas))
+	log.Info("RevertedStatus", "revertedSpecCpuUtilization", scheduleResult.originalSpecCpuUtilization, "currentStatusDesiredReplicas", hpa.Status.DesiredReplicas, "originalScaleUpStabilizationWindowSeconds", scheduleResult.originalScaleUpStabilizationWindowSeconds)
+	r.Recorder.Event(prescaler, corev1.EventTypeNormal, "Reverted", fmt.Sprintf("Successfully reverted HPA to %d%% CPU utilization, currently %d replicas", *scheduleResult.originalSpecCpuUtilization, hpa.Status.DesiredReplicas))
+
+	return nil
+}
+
+// clearOrphanedFields clears the orphaned fields from the prescaler status
+func (r *PrescaleReconciler) clearOrphanedFields(ctx context.Context, req ctrl.Request, prescaler *prescalerv1.Prescale) error {
+	log := logf.FromContext(ctx)
 
 	// Re-fetch Prescale for status update orphaned fields to nil
-	if err := r.Get(ctx, req.NamespacedName, &prescaler); err != nil {
+	if err := r.Get(ctx, req.NamespacedName, prescaler); err != nil {
 		log.Error(err, "unable to re-fetch Prescaler for status update orphaned fields to nil")
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		return client.IgnoreNotFound(err)
 	}
 
 	// Clear orphaned fields
 	prescaler.Status.OrphanedSpecCpuUtilization = nil
 	prescaler.Status.OrphanedScaleUpStabilizationWindowSeconds = nil
-	if err := r.Status().Update(ctx, &prescaler); err != nil {
+	if err := r.Status().Update(ctx, prescaler); err != nil {
 		log.Error(err, "Failed to update status for status update orphaned fields to nil")
-		r.Recorder.Event(&prescaler, corev1.EventTypeWarning, "FailedUpdateStatus", err.Error())
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		r.Recorder.Event(prescaler, corev1.EventTypeWarning, "FailedUpdateStatus", err.Error())
+		return client.IgnoreNotFound(err)
 	}
 
-	// we'll requeue once we see the running job, and update our status
-	return scheduledResult, nil
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *PrescaleReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	maxConcurrentReconciles := 5
+	if val, ok := os.LookupEnv("MAX_CONCURRENT_RECONCILES"); ok {
+		if num, err := strconv.Atoi(val); err == nil {
+			maxConcurrentReconciles = num
+		}
+	}
+
+	// Only reconcile when the generation changes to ignore status updates
+	pred := predicate.GenerationChangedPredicate{}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&prescalerv1.Prescale{}).
+		WithEventFilter(pred).
 		Named("prescale").
+		WithOptions(controller.Options{
+			MaxConcurrentReconciles: maxConcurrentReconciles,
+		}).
 		Complete(r)
 }

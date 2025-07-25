@@ -1,0 +1,31 @@
+# Test configuration for MaxConcurrentReconciles
+controllerManager:
+  replicas: 1
+  maxConcurrentReconciles: 10  # Test with 10 concurrent reconciliations
+  container:
+    image:
+      repository: altuhovsu/prescaler
+      tag: latest
+    args:
+      - "--leader-elect"
+      - "--metrics-bind-address=:8443"
+      - "--health-probe-bind-address=:8081"
+
+rbac:
+  enable: true
+
+crd:
+  enable: true
+  keep: true
+
+metrics:
+  enable: true
+
+prometheus:
+  enable: false
+
+certmanager:
+  enable: false
+
+networkPolicy:
+  enable: false 

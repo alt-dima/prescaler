@@ -1,5 +1,6 @@
 # Image URL to use all building/pushing image targets
-IMG ?= altuhovsu/prescaler:latest
+# IMG ?= altuhovsu/prescaler:latest
+IMG ?= prescaler:v0.1.0
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
