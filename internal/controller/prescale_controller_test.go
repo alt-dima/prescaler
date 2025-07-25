@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+	http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -51,7 +51,17 @@ var _ = Describe("Prescale Controller", func() {
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: prescalerv1.PrescaleSpec{
+						TargetHpaName: "dummy-hpa",
+						Schedules: []prescalerv1.PrescaleSchedule{
+							{
+								Cron:    "55 * * * *",
+								Percent: 70,
+							},
+						},
+						Suspend:           func(b bool) *bool { return &b }(false),
+						RevertWaitSeconds: func(i int64) *int64 { return &i }(40),
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
