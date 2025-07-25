@@ -36,6 +36,7 @@ Here's how a typical scenario might unfold:
 **Attention!**
 - When you specify a cron schedule, keep in mind a **timezone**! Probably controller will run in your Kubernetes cluster in UTC timezone!
 - Also check maxConcurrentReconciles parameter and logs (in case you have overdue prescaling)
+- Prescaling may not be accurate/precise due to constant changes in scaling and CPU usage 
 
 [Helm Chart](dist/chart)
 

@@ -400,8 +400,8 @@ var _ = Describe("Prescale Controller", func() {
 				updatedHPA := &autoscalingv2.HorizontalPodAutoscaler{}
 				Expect(k8sClient.Get(ctx, hpaNamespacedName, updatedHPA)).To(Succeed())
 
-				// CPU utilization should be reduced by 70%
-				expectedCPU := int32(70 - (70 * 70 / 100)) // 70 - 49 = 21
+				// CPU utilization should be calculated as: original * 100 / percent
+				expectedCPU := int32(70 * 100 / 70) // 70 * 100 / 70 = 100
 				Expect(*updatedHPA.Spec.Metrics[0].Resource.Target.AverageUtilization).To(Equal(expectedCPU))
 
 				// Stabilization window should be set to 0
