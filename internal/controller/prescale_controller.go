@@ -350,7 +350,9 @@ func (r *PrescaleReconciler) executePrescale(ctx context.Context, req ctrl.Reque
 			break
 		}
 	}
-	if originalCurrentCpuUtilization == nil {
+	// Safe due to short-circuit evaluation: if originalCurrentCpuUtilization is nil,
+	// the second condition is never evaluated
+	if originalCurrentCpuUtilization == nil || *originalCurrentCpuUtilization > *originalSpecCpuUtilization {
 		originalCurrentCpuUtilization = originalSpecCpuUtilization
 	}
 
