@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+	http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -119,15 +119,18 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, nil
 	}
 
-	getNextSchedule := func(prescaler *prescalerv1.Prescale, now time.Time) (lastMissed time.Time, next time.Time, err error) {
-		sched, err := cron.ParseStandard(prescaler.Spec.Schedule)
-		if err != nil {
-			return time.Time{}, time.Time{}, fmt.Errorf("unparseable schedule %q: %w", prescaler.Spec.Schedule, err)
-		}
+	now := time.Now()
+	var bestNext time.Time
+	var bestMissed time.Time
+	var bestMissedSchedule *prescalerv1.PrescaleSchedule
 
-		// for optimization purposes, cheat a bit and start from our last observed run time
-		// we could reconstitute this here, but there's not much point, since we've
-		// just updated it.
+	for i := range prescaler.Spec.Schedules {
+		sched := &prescaler.Spec.Schedules[i]
+		cronSched, err := cron.ParseStandard(sched.Cron)
+		if err != nil {
+			// skip invalid cron
+			continue
+		}
 		var earliestTime time.Time
 		if prescaler.Status.LastScaledTime != nil {
 			earliestTime = prescaler.Status.LastScaledTime.Time
@@ -135,72 +138,56 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			earliestTime = prescaler.CreationTimestamp.Time
 		}
 		if prescaler.Spec.StartingDeadlineSeconds != nil {
-			// controller is not going to schedule anything below this point
 			schedulingDeadline := now.Add(-time.Second * time.Duration(*prescaler.Spec.StartingDeadlineSeconds))
-
 			if schedulingDeadline.After(earliestTime) {
 				earliestTime = schedulingDeadline
 			}
 		}
 		if earliestTime.After(now) {
-			return time.Time{}, sched.Next(now), nil
+			next := cronSched.Next(now)
+			if bestNext.IsZero() || next.Before(bestNext) {
+				bestNext = next
+			}
+			continue
 		}
-
 		starts := 0
-		for t := sched.Next(earliestTime); !t.After(now); t = sched.Next(t) {
+		var lastMissed time.Time
+		for t := cronSched.Next(earliestTime); !t.After(now); t = cronSched.Next(t) {
 			lastMissed = t
-			// An object might miss several starts. For example, if
-			// controller gets wedged on Friday at 5:01pm when everyone has
-			// gone home, and someone comes in on Tuesday AM and discovers
-			// the problem and restarts the controller, then all the hourly
-			// jobs, more than 80 of them for one hourly scheduledJob, should
-			// all start running with no further intervention (if the scheduledJob
-			// allows concurrency and late starts).
-			//
-			// However, if there is a bug somewhere, or incorrect clock
-			// on controller's server or apiservers (for setting creationTimestamp)
-			// then there could be so many missed start times (it could be off
-			// by decades or more), that it would eat up all the CPU and memory
-			// of this controller. In that case, we want to not try to list
-			// all the missed start times.
 			starts++
 			if starts > 100 {
-				// We can't get the most recent times so just return an empty slice
-				return time.Time{}, time.Time{}, fmt.Errorf("too many missed start times (> 100). Set or decrease .spec.startingDeadlineSeconds or check clock skew")
+				break
 			}
 		}
-		return lastMissed, sched.Next(now), nil
+		next := cronSched.Next(now)
+		if !lastMissed.IsZero() {
+			if bestMissed.IsZero() || lastMissed.After(bestMissed) {
+				bestMissed = lastMissed
+				bestMissedSchedule = sched
+			}
+		}
+		if bestNext.IsZero() || next.Before(bestNext) {
+			bestNext = next
+		}
 	}
 
-	// figure out the next times that we need to create
-	// jobs at (or anything we missed).
-	missedRun, nextRun, err := getNextSchedule(&prescaler, time.Now())
-	if err != nil {
-		r.Recorder.Event(&prescaler, corev1.EventTypeWarning, "FailedGetNextSchedule", err.Error())
-		log.Error(err, "unable to figure out Prescaler schedule")
-		// we don't really care about requeuing until we get an update that
-		// fixes the schedule, so don't return an error
-		return ctrl.Result{}, nil
-	}
+	scheduledResult := ctrl.Result{RequeueAfter: time.Until(bestNext)}
+	log = log.WithValues("now", now, "next run", bestNext)
 
-	scheduledResult := ctrl.Result{RequeueAfter: time.Until(nextRun)} // save this so we can re-use it elsewhere
-	log = log.WithValues("now", time.Now(), "next run", nextRun)
-
-	if missedRun.IsZero() {
+	if bestMissed.IsZero() {
 		log.V(1).Info("no upcoming scheduled times, sleeping until next")
 		return scheduledResult, nil
 	}
 
 	// make sure we're not too late to start the run
-	log = log.WithValues("current run", missedRun)
+	log = log.WithValues("current run", bestMissed)
 	tooLate := false
 	if prescaler.Spec.StartingDeadlineSeconds != nil {
-		tooLate = missedRun.Add(time.Duration(*prescaler.Spec.StartingDeadlineSeconds) * time.Second).Before(time.Now())
+		tooLate = bestMissed.Add(time.Duration(*prescaler.Spec.StartingDeadlineSeconds) * time.Second).Before(now)
 	}
 	if tooLate {
 		r.Recorder.Event(&prescaler, corev1.EventTypeNormal, "MissedStartingDeadline", "missed starting deadline for last run, sleeping till next")
 		log.V(1).Info("missed starting deadline for last run, sleeping till next")
-		// TODO(directxman12): events
 		return scheduledResult, nil
 	}
 
@@ -236,7 +223,9 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	currentStatusDesiredReplicas := hpa.Status.DesiredReplicas
 	log.Info("currentStatus", "originalSpecCpuUtilization", originalSpecCpuUtilization, "currentStatusDesiredReplicas", currentStatusDesiredReplicas, "originalScaleUpStabilizationWindowSeconds", originalScaleUpStabilizationWindowSeconds)
 
-	prescaleSpecCpuUtilization := *originalSpecCpuUtilization - int32(float64(*originalSpecCpuUtilization)*float64(*prescaler.Spec.Percent)/100)
+	// Use the percent from the selected schedule
+	percent := bestMissedSchedule.Percent
+	prescaleSpecCpuUtilization := *originalSpecCpuUtilization - int32(float64(*originalSpecCpuUtilization)*float64(percent)/100)
 
 	// Re-fetch Prescaler for status update
 	if err := r.Get(ctx, req.NamespacedName, &prescaler); err != nil {
@@ -244,7 +233,7 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	prescaler.Status.LastScaledTime = &metav1.Time{Time: missedRun}
+	prescaler.Status.LastScaledTime = &metav1.Time{Time: bestMissed}
 	prescaler.Status.LastPrescaleSpecCpuUtilization = prescaleSpecCpuUtilization
 	prescaler.Status.LastOriginalSpecCpuUtilization = *originalSpecCpuUtilization
 	prescaler.Status.OrphanedSpecCpuUtilization = originalSpecCpuUtilization
@@ -262,8 +251,7 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		zero := int32(0)
 		hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds = &zero
 	}
-	err = r.Update(ctx, hpa)
-	if err != nil {
+	if err := r.Update(ctx, hpa); err != nil {
 		log.Error(err, "failed to update hpa for prescale")
 		r.Recorder.Event(&prescaler, corev1.EventTypeWarning, "FailedUpdateHPA", err.Error())
 		return ctrl.Result{}, client.IgnoreNotFound(err)
@@ -330,8 +318,7 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if originalScaleUpStabilizationWindowSeconds != nil {
 		hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds = originalScaleUpStabilizationWindowSeconds
 	}
-	err = r.Update(ctx, hpa)
-	if err != nil {
+	if err := r.Update(ctx, hpa); err != nil {
 		log.Error(err, "failed to update hpa for revert")
 		r.Recorder.Event(&prescaler, corev1.EventTypeWarning, "FailedUpdateHPA", err.Error())
 		return ctrl.Result{}, client.IgnoreNotFound(err)

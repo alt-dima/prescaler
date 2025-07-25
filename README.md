@@ -31,19 +31,40 @@ Here's how a typical scenario might unfold:
 Important!
 If your SuperHeavyApp takes a lot of time to start:
 - Increase `behavior.scaleDown.stabilizationWindowSeconds` from recommended 10 minutes (for example, to 20 minutes)
-- Start prescaling earlier (for example, at `"51 * * * *"`)
-In this case you will provide 9 minutes before round hour for pods to become ready
+- Start prescaling earlier (for example, at `"51 * * * *"`), or use multiple schedules for different times of day.
+With the new `schedules` field, you can define multiple prescale actions with different times and percentages, e.g.:
+
+```yaml
+spec:
+  targetHpaName: nginx-project
+  schedules:
+    - cron: "55 0-1 * * *"
+      percent: 50
+    - cron: "55 2-12 * * *"
+      percent: 80
+    - cron: "55 13-23 * * *"
+      percent: 50
+  suspend: false
+  revertWaitSeconds: 40
+```
+
+This allows you to prescale at different times with different percentages, all before the round hour.
 
 [Helm Chart](dist/chart)
 
-[Example Prescale CR](config/samples/prescaler_v1_prescale.yaml): 
-```
+[Example Prescale CR](config/samples/prescaler_v1_prescale.yaml):
+```yaml
 spec:
-  targetHpaName: nginx-project - target HPA to scale, must be in the same namespace as Prescale CR
-  schedule: "55 * * * *" - Cron shedule to trigger prescale
-  percent: 70 - prectent to decrease CPU AverageUtilization from current/original CPU AverageUtilization (if current/original AverageUtilization=70, percent=70, then Prescaler will temporary set AverageUtilization=70-70%=21%)
-  suspend: false - enable/disable prescaler
-  revertWaitSeconds: 40 - max wait time before reverting back to original values. It is important, because we must provide Kubernetes time to detect and react on HPA changes (to trigger scaleup desiredReplicas)
+  targetHpaName: nginx-project # target HPA to scale, must be in the same namespace as Prescale CR
+  schedules:
+    - cron: "55 0-1 * * *"
+      percent: 50
+    - cron: "55 2-12 * * *"
+      percent: 80
+    - cron: "55 13-23 * * *"
+      percent: 50 # percent to decrease CPU AverageUtilization from current/original CPU AverageUtilization
+  suspend: false # enable/disable prescaler
+  revertWaitSeconds: 40 # max wait time before reverting back to original values. It is important, because we must provide Kubernetes time to detect and react on HPA changes (to trigger scaleup desiredReplicas)
 ```
 
 P.S. Cron/schedule logic was taken from [book.kubebuilder.io/cronjob-tutorial](https://book.kubebuilder.io/cronjob-tutorial/controller-implementation#5-get-the-next-scheduled-run)

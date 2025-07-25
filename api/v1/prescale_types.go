@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+	http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -23,30 +23,27 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
+// PrescaleSchedule defines a scheduled prescale action.
+type PrescaleSchedule struct {
+	// Cron expression for when to apply this prescale (e.g., "55 5 * * *" for 5:55am)
+	Cron string `json:"cron"`
+	// Percent to scale up by at this schedule
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	Percent int32 `json:"percent"`
+}
+
 // PrescaleSpec defines the desired state of Prescale.
 type PrescaleSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-
 	// Name of the resource to scale
 	TargetHpaName string `json:"targetHpaName"`
 
-	// Percentage to scale up by
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=100
-	// +kubebuilder:validation:ExclusiveMaximum=false
-	Percent *int32 `json:"percent"`
+	// List of scheduled prescale actions
+	Schedules []PrescaleSchedule `json:"schedules"`
 
 	// Suspend the prescaler
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
 	// +kubebuilder:validation:Type=boolean
 	Suspend *bool `json:"suspend"`
-
-	// The schedule in Cron format, see https://en.wikipedia.org/wiki/Cron.
-	Schedule string `json:"schedule"`
 
 	// +kubebuilder:validation:Minimum=0
 

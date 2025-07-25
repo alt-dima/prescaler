@@ -39,24 +39,32 @@ spec:
           spec:
             description: PrescaleSpec defines the desired state of Prescale.
             properties:
-              percent:
-                description: |-
-                  Percentage to scale up by
-                  The following markers will use OpenAPI v3 schema to validate the value
-                  More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
-                format: int32
-                maximum: 100
-                minimum: 1
-                type: integer
               revertWaitSeconds:
                 description: RevertWaitSeconds is the number of seconds to wait before
                   reverting the scale
                 format: int64
                 minimum: 0
                 type: integer
-              schedule:
-                description: The schedule in Cron format, see https://en.wikipedia.org/wiki/Cron.
-                type: string
+              schedules:
+                description: List of scheduled prescale actions
+                items:
+                  description: PrescaleSchedule defines a scheduled prescale action.
+                  properties:
+                    cron:
+                      description: Cron expression for when to apply this prescale
+                        (e.g., "55 5 * * *" for 5:55am)
+                      type: string
+                    percent:
+                      description: Percent to scale up by at this schedule
+                      format: int32
+                      maximum: 100
+                      minimum: 1
+                      type: integer
+                  required:
+                  - cron
+                  - percent
+                  type: object
+                type: array
               startingDeadlineSeconds:
                 description: |-
                   Optional deadline in seconds for starting the job if it misses scheduled
@@ -65,17 +73,13 @@ spec:
                 minimum: 0
                 type: integer
               suspend:
-                description: |-
-                  Suspend the prescaler
-                  The following markers will use OpenAPI v3 schema to validate the value
-                  More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
+                description: Suspend the prescaler
                 type: boolean
               targetHpaName:
                 description: Name of the resource to scale
                 type: string
             required:
-            - percent
-            - schedule
+            - schedules
             - suspend
             - targetHpaName
             type: object

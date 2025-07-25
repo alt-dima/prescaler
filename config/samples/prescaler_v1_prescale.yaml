@@ -7,7 +7,12 @@ metadata:
   name: prescale-sample
 spec:
   targetHpaName: nginx-project
-  schedule: "50,54 * * * *"
-  percent: 50
+  schedules:
+    - cron: "55 0-1 * * *"
+      percent: 50
+    - cron: "55 2-12 * * *"
+      percent: 80
+    - cron: "55 13-23 * * *"
+      percent: 50
   suspend: false
   revertWaitSeconds: 10
