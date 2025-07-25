@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	prescalerv1 "github.com/alt-dima/prescaler/api/v1"
 )
@@ -512,8 +513,12 @@ func (r *PrescaleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}
 	}
 
+	// Only reconcile when the generation changes to ignore status updates
+	pred := predicate.GenerationChangedPredicate{}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&prescalerv1.Prescale{}).
+		WithEventFilter(pred).
 		Named("prescale").
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: maxConcurrentReconciles,
