@@ -1,8 +1,6 @@
 name: Test Chart
 
-on:
-  push:
-  pull_request:
+on: workflow_dispatch
 
 jobs:
   test-e2e:
