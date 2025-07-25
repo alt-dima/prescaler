@@ -28,8 +28,6 @@ type PrescaleSchedule struct {
 	// Cron expression for when to apply this prescale (e.g., "55 5 * * *" for 5:55am)
 	Cron string `json:"cron"`
 	// Percent to scale up by at this schedule
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=100
 	Percent int32 `json:"percent"`
 }
 

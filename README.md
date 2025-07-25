@@ -3,7 +3,7 @@ Prescaler allows you to proactively scale up your Kubernetes HPAs minutes before
 
 ## Description
 Imagine you have a Kubernetes deployment of `SuperHeavyApp` with 10 replicas and an associated **Horizontal Pod Autoscaler (HPA)**.
-Every hour, your application experiences a brief, intense traffic spike that necessitates scaling `SuperHeavyApp` up by 50% (requiring 5 additional pods).
+Every hour, your application experiences a brief, intense traffic spike that necessitates scaling `SuperHeavyApp` up to 200% (requiring 10 additional pods) with total 20 pods.
 
 Here's how a typical scenario might unfold:
 
@@ -18,8 +18,8 @@ Here's how a typical scenario might unfold:
 
 ### In this case we have two options:
 - Configure **Horizontal Pod Autoscaler (HPA)** to scale based on **40% CPU usage** with a `stabilizationWindowSeconds` of `3600`. This will keep it upscaled most of the time, leading to wasted resources and money.
-- Use **Prescaler**. For the `SuperHeavyApp` HPA/Deployment, configure Prescaler's Custom Resource (CR) to prescale by **+50% at "56 * * * *"**. At 8:56:00, Prescaler will:
-    - Change HPA's CPU `averageUtilization` from 70% to 35% and set `hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds` to 0 (for immediate scale-up).
+- Use **Prescaler**. For the `SuperHeavyApp` HPA/Deployment, configure Prescaler's Custom Resource (CR) to prescale to **200% at "56 * * * *"**. At 8:56:00, Prescaler will:
+    - Change HPA's CPU `averageUtilization` from 70% to (70*100/200) 35% and set `hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds` to 0 (for immediate scale-up).
     - HPA will start scaling up from 10 to 20 pods (2x). Prescaler will then wait for XX seconds.
     - Once HPA has scaled to 20 pods, Prescaler will revert HPA's CPU `averageUtilization` and `hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds` to their original values.
     - HPA will remain upscaled (with real usage at 35% across 20 pods) until `behavior.scaleDown.stabilizationWindowSeconds`. **It's better to increase this to 10 minutes** (the default is 5 minutes).
@@ -37,7 +37,6 @@ Here's how a typical scenario might unfold:
 - When you specify a cron schedule, keep in mind a **timezone**! Probably controller will run in your Kubernetes cluster in UTC timezone!
 - Also check maxConcurrentReconciles parameter and logs (in case you have overdue prescaling)
 
-
 [Helm Chart](dist/chart)
 
 [Example Prescale CR](config/samples/prescaler_v1_prescale.yaml):
@@ -46,16 +45,24 @@ spec:
   targetHpaName: nginx-project # target HPA to scale, must be in the same namespace as Prescale CR
   schedules:
     - cron: "55 * * * 6,0"
-      percent: 40
+      percent: 165
     - cron: "55 0-1 * * 1-5"
-      percent: 50
+      percent: 200
     - cron: "55 2-12 * * 1-5"
-      percent: 80
+      percent: 500
     - cron: "55 13-23 * * 1-5"
-      percent: 50 # percent to decrease CPU AverageUtilization from current/original CPU AverageUtilization
+      percent: 200 # To calculate new CPU AverageUtilization value based on formula: original * 100 / percent
   suspend: false # enable/disable prescaler
   revertWaitSeconds: 40 # max wait time before reverting back to original values. It is important, because we must provide Kubernetes time to detect and react on HPA changes (to trigger scaleup desiredReplicas)
 ```
+
+**Notice** how `percent` parameter works! It is used in formula to calculate new/temporary value for CPU AverageUtilization.
+For example: 
+- you have 30 pods
+- in HPA you set CPU AverageUtilization value = 50
+- in Prescaler you set percent = 200
+
+Than Prescaler will do math 50 * 100 / 200 = 25 and set CPU AverageUtilization = 25. HPA will scale up to 60 pods, because it will need 60 pods to maintain avg cpu about 25% (because on 50% it needed 30 pods)
 
 ## Getting Started with Controller development
 

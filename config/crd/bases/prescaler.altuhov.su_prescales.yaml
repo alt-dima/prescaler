@@ -57,8 +57,6 @@ spec:
                     percent:
                       description: Percent to scale up by at this schedule
                       format: int32
-                      maximum: 100
-                      minimum: 1
                       type: integer
                   required:
                   - cron

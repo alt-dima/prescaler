@@ -360,7 +360,7 @@ func (r *PrescaleReconciler) executePrescale(ctx context.Context, req ctrl.Reque
 
 	// Use the percent from the selected schedule
 	percent := scheduleResult.bestMissedSchedule.Percent
-	prescaleSpecCpuUtilization := *originalSpecCpuUtilization - int32(float64(*originalSpecCpuUtilization)*float64(percent)/100)
+	prescaleSpecCpuUtilization := int32(float64(*originalSpecCpuUtilization) * 100 / float64(percent))
 
 	// Re-fetch Prescaler for status update
 	if err := r.Get(ctx, req.NamespacedName, prescaler); err != nil {
