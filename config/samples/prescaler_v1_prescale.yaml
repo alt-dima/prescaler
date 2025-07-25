@@ -9,12 +9,12 @@ spec:
   targetHpaName: nginx-project
   schedules:
     - cron: "55 * * * 6,0"
-      percent: 40
+      percent: 165
     - cron: "55 0-1 * * 1-5"
-      percent: 50
+      percent: 200
     - cron: "55 2-12 * * 1-5"
-      percent: 80
+      percent: 500
     - cron: "55 13-23 * * 1-5"
-      percent: 50
+      percent: 200 # To calculate new CPU AverageUtilization value based on formula: original * 100 / percent
   suspend: false
   revertWaitSeconds: 10
