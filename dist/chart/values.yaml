@@ -1,6 +1,9 @@
 # [MANAGER]: Manager Deployment Configurations
 controllerManager:
   replicas: 1
+  # MaxConcurrentReconciles sets the maximum number of concurrent reconciliations
+  # This controls how many prescalers can be processed simultaneously
+  maxConcurrentReconciles: 100
   container:
     image:
       repository: altuhovsu/prescaler
@@ -11,10 +14,9 @@ controllerManager:
       - "--health-probe-bind-address=:8081"
     resources:
       limits:
-        cpu: 500m
         memory: 128Mi
       requests:
-        cpu: 10m
+        cpu: 50m
         memory: 64Mi
     livenessProbe:
       initialDelaySeconds: 15

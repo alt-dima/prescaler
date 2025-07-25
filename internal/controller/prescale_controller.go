@@ -19,6 +19,9 @@ package controller
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/robfig/cron"
@@ -29,6 +32,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	prescalerv1 "github.com/alt-dima/prescaler/api/v1"
@@ -41,6 +45,34 @@ type PrescaleReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+	// hpaProcessing tracks which HPA is currently being processed to prevent race conditions
+	hpaProcessing sync.Map
+}
+
+// acquireHPALock attempts to acquire a lock for processing a specific HPA
+// Returns true if lock was acquired, false if HPA is already being processed
+func (r *PrescaleReconciler) acquireHPALock(hpaKey string) bool {
+	_, loaded := r.hpaProcessing.LoadOrStore(hpaKey, time.Now())
+	return !loaded
+}
+
+// releaseHPALock releases the lock for a specific HPA
+func (r *PrescaleReconciler) releaseHPALock(hpaKey string) {
+	r.hpaProcessing.Delete(hpaKey)
+}
+
+// cleanupStaleLocks removes locks that have been held for too long (deadlock prevention)
+func (r *PrescaleReconciler) cleanupStaleLocks() {
+	now := time.Now()
+	r.hpaProcessing.Range(func(key, value interface{}) bool {
+		if lockTime, ok := value.(time.Time); ok {
+			if now.Sub(lockTime) > 5*time.Minute {
+				logf.Log.Info("Cleaning up stale HPA lock", "hpaKey", key, "lockDuration", now.Sub(lockTime))
+				r.hpaProcessing.Delete(key)
+			}
+		}
+		return true
+	})
 }
 
 // +kubebuilder:rbac:groups=prescaler.altuhov.su,resources=prescales,verbs=get;list;watch;create;update;patch;delete
@@ -63,6 +95,11 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	log.Info("Starting Reconcile")
 
+	// Periodic cleanup of stale locks (every 100 reconciliations to avoid performance impact)
+	if req.Name != "" && len(req.Name)%100 == 0 {
+		r.cleanupStaleLocks()
+	}
+
 	// Fetch the Prescaler instance
 	prescaler := prescalerv1.Prescale{}
 	if err := r.Get(ctx, req.NamespacedName, &prescaler); err != nil {
@@ -72,6 +109,14 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// on deleted requests.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+
+	// Per-HPA concurrency control: prevent multiple reconciliations from processing the same HPA
+	hpaKey := fmt.Sprintf("%s/%s", req.Namespace, prescaler.Spec.TargetHpaName)
+	if !r.acquireHPALock(hpaKey) {
+		log.V(1).Info("HPA is already being processed by another reconciliation, requeuing", "hpaKey", hpaKey)
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+	defer r.releaseHPALock(hpaKey)
 
 	// Handle orphaned prescale state
 	if err := r.handleOrphanedState(ctx, req, &prescaler); err != nil {
@@ -460,8 +505,18 @@ func (r *PrescaleReconciler) clearOrphanedFields(ctx context.Context, req ctrl.R
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *PrescaleReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	maxConcurrentReconciles := 5
+	if val, ok := os.LookupEnv("MAX_CONCURRENT_RECONCILES"); ok {
+		if num, err := strconv.Atoi(val); err == nil {
+			maxConcurrentReconciles = num
+		}
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&prescalerv1.Prescale{}).
 		Named("prescale").
+		WithOptions(controller.Options{
+			MaxConcurrentReconciles: maxConcurrentReconciles,
+		}).
 		Complete(r)
 }
