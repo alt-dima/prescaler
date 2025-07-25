@@ -57,7 +57,7 @@ spec:
   revertWaitSeconds: 40 # max wait time before reverting back to original values. It is important, because we must provide Kubernetes time to detect and react on HPA changes (to trigger scaleup desiredReplicas)
 ```
 
-## Getting Started for the Controller development
+## Getting Started with Controller development
 
 ### Prerequisites
 - go version v1.24.0+
