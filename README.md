@@ -34,8 +34,8 @@ Here's how a typical scenario might unfold:
 
 ## Deployment and Custom Resources
 **Attention!**
-When you specify a cron schedule, keep in mind a **timezone**! Probably controller will run in your Kubernetes cluster in UTC timezone!
-Also check maxConcurrentReconciles parameter and logs (in case you have overdue prescaling)
+- When you specify a cron schedule, keep in mind a **timezone**! Probably controller will run in your Kubernetes cluster in UTC timezone!
+- Also check maxConcurrentReconciles parameter and logs (in case you have overdue prescaling)
 
 
 [Helm Chart](dist/chart)
