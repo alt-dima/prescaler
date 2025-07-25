@@ -347,7 +347,7 @@ func (r *PrescaleReconciler) executePrescale(ctx context.Context, req ctrl.Reque
 	}
 
 	log.Info("prescaleSpecCpuUtilization", "value", prescaleSpecCpuUtilization)
-	r.Recorder.Event(prescaler, corev1.EventTypeNormal, "Prescaled", fmt.Sprintf("Successfully prescaled HPA to %d%% CPU utilization", prescaleSpecCpuUtilization))
+	r.Recorder.Event(prescaler, corev1.EventTypeNormal, "Prescaled", fmt.Sprintf("Successfully prescaled HPA to %d%% CPU utilization, currently %d replicas, %d%%", prescaleSpecCpuUtilization, currentStatusDesiredReplicas, percent))
 
 	return nil
 }
@@ -431,7 +431,7 @@ func (r *PrescaleReconciler) revertHPA(ctx context.Context, req ctrl.Request, pr
 	}
 
 	log.Info("RevertedStatus", "revertedSpecCpuUtilization", scheduleResult.originalSpecCpuUtilization, "currentStatusDesiredReplicas", hpa.Status.DesiredReplicas, "originalScaleUpStabilizationWindowSeconds", scheduleResult.originalScaleUpStabilizationWindowSeconds)
-	r.Recorder.Event(prescaler, corev1.EventTypeNormal, "Reverted", fmt.Sprintf("Successfully reverted HPA to %d%% CPU utilization and %d replicas", *scheduleResult.originalSpecCpuUtilization, hpa.Status.DesiredReplicas))
+	r.Recorder.Event(prescaler, corev1.EventTypeNormal, "Reverted", fmt.Sprintf("Successfully reverted HPA to %d%% CPU utilization, currently %d replicas", *scheduleResult.originalSpecCpuUtilization, hpa.Status.DesiredReplicas))
 
 	return nil
 }

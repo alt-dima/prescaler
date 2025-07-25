@@ -24,7 +24,7 @@ jobs:
           sudo mv ./kind /usr/local/bin/kind
 
       - name: Verify kind installation
-        run: kind version
+        run: KIND_EXPERIMENTAL_PROVIDER=podman kind version
 
       - name: Create kind cluster
         run: kind create cluster
@@ -32,8 +32,9 @@ jobs:
       - name: Prepare prescaler
         run: |
           go mod tidy
+          export KIND_EXPERIMENTAL_PROVIDER=podman
           make docker-build IMG=prescaler:v0.1.0
-          kind load docker-image prescaler:v0.1.0
+          kind load docker-image localhost/prescaler:v0.1.0
 
       - name: Install Helm
         run: |
