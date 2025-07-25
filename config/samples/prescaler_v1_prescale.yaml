@@ -8,11 +8,13 @@ metadata:
 spec:
   targetHpaName: nginx-project
   schedules:
-    - cron: "55 0-1 * * *"
+    - cron: "55 * * * 6,0"
+      percent: 40
+    - cron: "55 0-1 * * 1-5"
       percent: 50
-    - cron: "55 2-12 * * *"
+    - cron: "55 2-12 * * 1-5"
       percent: 80
-    - cron: "55 13-23 * * *"
+    - cron: "55 13-23 * * 1-5"
       percent: 50
   suspend: false
   revertWaitSeconds: 10

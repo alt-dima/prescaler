@@ -34,22 +34,6 @@ If your SuperHeavyApp takes a lot of time to start:
 - Start prescaling earlier (for example, at `"51 * * * *"`), or use multiple schedules for different times of day.
 With the new `schedules` field, you can define multiple prescale actions with different times and percentages, e.g.:
 
-```yaml
-spec:
-  targetHpaName: nginx-project
-  schedules:
-    - cron: "55 0-1 * * *"
-      percent: 50
-    - cron: "55 2-12 * * *"
-      percent: 80
-    - cron: "55 13-23 * * *"
-      percent: 50
-  suspend: false
-  revertWaitSeconds: 40
-```
-
-This allows you to prescale at different times with different percentages, all before the round hour.
-
 [Helm Chart](dist/chart)
 
 [Example Prescale CR](config/samples/prescaler_v1_prescale.yaml):
@@ -57,11 +41,13 @@ This allows you to prescale at different times with different percentages, all b
 spec:
   targetHpaName: nginx-project # target HPA to scale, must be in the same namespace as Prescale CR
   schedules:
-    - cron: "55 0-1 * * *"
+    - cron: "55 * * * 6,0"
+      percent: 40
+    - cron: "55 0-1 * * 1-5"
       percent: 50
-    - cron: "55 2-12 * * *"
+    - cron: "55 2-12 * * 1-5"
       percent: 80
-    - cron: "55 13-23 * * *"
+    - cron: "55 13-23 * * 1-5"
       percent: 50 # percent to decrease CPU AverageUtilization from current/original CPU AverageUtilization
   suspend: false # enable/disable prescaler
   revertWaitSeconds: 40 # max wait time before reverting back to original values. It is important, because we must provide Kubernetes time to detect and react on HPA changes (to trigger scaleup desiredReplicas)
