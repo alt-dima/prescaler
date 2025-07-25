@@ -16,7 +16,7 @@ Here's how a typical scenario might unfold:
 - **!?!?!?**
 - **9:08:00:** HPA scales back down to 10 `SuperHeavyApp` pods, with CPU utilization at 70% (among the 10 pods).
 
-## In this case we have two options:
+### In this case we have two options:
 - Configure **Horizontal Pod Autoscaler (HPA)** to scale based on **40% CPU usage** with a `stabilizationWindowSeconds` of `3600`. This will keep it upscaled most of the time, leading to wasted resources and money.
 - Use **Prescaler**. For the `SuperHeavyApp` HPA/Deployment, configure Prescaler's Custom Resource (CR) to prescale by **+50% at "56 * * * *"**. At 8:56:00, Prescaler will:
     - Change HPA's CPU `averageUtilization` from 70% to 35% and set `hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds` to 0 (for immediate scale-up).
@@ -28,11 +28,13 @@ Here's how a typical scenario might unfold:
     - If the spike ends, HPA will scale down after it concludes (e.g., if the spike ends at 9:03:00, HPA scales down at 9:08:00, i.e., 9:03:00 + 5 minutes).
     - This process repeats for every hour.
 
-Important!
-If your SuperHeavyApp takes a lot of time to start:
+### If your SuperHeavyApp takes a lot of time to start:
 - Increase `behavior.scaleDown.stabilizationWindowSeconds` from recommended 10 minutes (for example, to 20 minutes)
 - Start prescaling earlier (for example, at `"51 * * * *"`), or use multiple schedules for different times of day.
-With the new `schedules` field, you can define multiple prescale actions with different times and percentages, e.g.:
+
+## Deployment and Custom Resources
+
+**Attention!** When you specify a cron schedule, keep in mind a **timezone**! Probably controller will run in your Kubernetes cluster in UTC timezone!
 
 [Helm Chart](dist/chart)
 
@@ -53,9 +55,7 @@ spec:
   revertWaitSeconds: 40 # max wait time before reverting back to original values. It is important, because we must provide Kubernetes time to detect and react on HPA changes (to trigger scaleup desiredReplicas)
 ```
 
-P.S. Cron/schedule logic was taken from [book.kubebuilder.io/cronjob-tutorial](https://book.kubebuilder.io/cronjob-tutorial/controller-implementation#5-get-the-next-scheduled-run)
-
-## Getting Started
+## Getting Started for the Controller development
 
 ### Prerequisites
 - go version v1.24.0+
