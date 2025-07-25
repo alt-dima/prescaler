@@ -98,6 +98,17 @@ var _ = Describe("Prescale Controller", func() {
 			Status: autoscalingv2.HorizontalPodAutoscalerStatus{
 				DesiredReplicas: 5,
 				CurrentReplicas: 5,
+				CurrentMetrics: []autoscalingv2.MetricStatus{
+					{
+						Type: autoscalingv2.ResourceMetricSourceType,
+						Resource: &autoscalingv2.ResourceMetricStatus{
+							Name: "cpu",
+							Current: autoscalingv2.MetricValueStatus{
+								AverageUtilization: func(i int32) *int32 { return &i }(65),
+							},
+						},
+					},
+				},
 			},
 		}
 
@@ -378,6 +389,27 @@ var _ = Describe("Prescale Controller", func() {
 			// Create HPA first
 			Expect(k8sClient.Create(ctx, hpa)).To(Succeed())
 
+			// Update HPA status to include current metrics
+			// We need to re-fetch the HPA first to get the latest version
+			createdHPA := &autoscalingv2.HorizontalPodAutoscaler{}
+			Expect(k8sClient.Get(ctx, hpaNamespacedName, createdHPA)).To(Succeed())
+
+			// Set the status fields
+			createdHPA.Status.DesiredReplicas = 5
+			createdHPA.Status.CurrentReplicas = 5
+			createdHPA.Status.CurrentMetrics = []autoscalingv2.MetricStatus{
+				{
+					Type: autoscalingv2.ResourceMetricSourceType,
+					Resource: &autoscalingv2.ResourceMetricStatus{
+						Name: "cpu",
+						Current: autoscalingv2.MetricValueStatus{
+							AverageUtilization: func(i int32) *int32 { return &i }(65),
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Status().Update(ctx, createdHPA)).To(Succeed())
+
 			Expect(k8sClient.Create(ctx, prescale)).To(Succeed())
 			scheduleResult = &ScheduleResult{
 				bestMissed: time.Now().Add(-time.Minute),
@@ -400,8 +432,9 @@ var _ = Describe("Prescale Controller", func() {
 				updatedHPA := &autoscalingv2.HorizontalPodAutoscaler{}
 				Expect(k8sClient.Get(ctx, hpaNamespacedName, updatedHPA)).To(Succeed())
 
-				// CPU utilization should be calculated as: original * 100 / percent
-				expectedCPU := int32(70 * 100 / 70) // 70 * 100 / 70 = 100
+				// CPU utilization should be calculated as: originalCurrentCpuUtilization * 100 / percent
+				// originalCurrentCpuUtilization is 65, percent is 70
+				expectedCPU := int32(65 * 100 / 70) // 65 * 100 / 70 = 92
 				Expect(*updatedHPA.Spec.Metrics[0].Resource.Target.AverageUtilization).To(Equal(expectedCPU))
 
 				// Stabilization window should be set to 0
@@ -420,8 +453,12 @@ var _ = Describe("Prescale Controller", func() {
 
 		Context("When HPA has no CPU utilization metric", func() {
 			BeforeEach(func() {
+				// Re-fetch HPA to get the latest version
+				currentHPA := &autoscalingv2.HorizontalPodAutoscaler{}
+				Expect(k8sClient.Get(ctx, hpaNamespacedName, currentHPA)).To(Succeed())
+
 				// Update HPA to remove CPU metric
-				hpa.Spec.Metrics = []autoscalingv2.MetricSpec{
+				currentHPA.Spec.Metrics = []autoscalingv2.MetricSpec{
 					{
 						Type: autoscalingv2.ResourceMetricSourceType,
 						Resource: &autoscalingv2.ResourceMetricSource{
@@ -433,7 +470,7 @@ var _ = Describe("Prescale Controller", func() {
 						},
 					},
 				}
-				Expect(k8sClient.Update(ctx, hpa)).To(Succeed())
+				Expect(k8sClient.Update(ctx, currentHPA)).To(Succeed())
 			})
 
 			It("should return error", func() {
@@ -442,6 +479,57 @@ var _ = Describe("Prescale Controller", func() {
 				}, prescale, scheduleResult)
 
 				Expect(err).NotTo(HaveOccurred()) // Returns nil but logs error
+			})
+		})
+
+		Context("When HPA has no current CPU utilization metric", func() {
+			BeforeEach(func() {
+				// Re-fetch HPA to get the latest version
+				currentHPA := &autoscalingv2.HorizontalPodAutoscaler{}
+				Expect(k8sClient.Get(ctx, hpaNamespacedName, currentHPA)).To(Succeed())
+
+				// Update HPA to remove current CPU metric but keep spec CPU metric
+				currentHPA.Status.CurrentMetrics = []autoscalingv2.MetricStatus{
+					{
+						Type: autoscalingv2.ResourceMetricSourceType,
+						Resource: &autoscalingv2.ResourceMetricStatus{
+							Name: "memory",
+							Current: autoscalingv2.MetricValueStatus{
+								AverageUtilization: func(i int32) *int32 { return &i }(75),
+							},
+						},
+					},
+				}
+				Expect(k8sClient.Status().Update(ctx, currentHPA)).To(Succeed())
+			})
+
+			It("should fall back to spec CPU utilization", func() {
+				err := reconciler.executePrescale(ctx, reconcile.Request{
+					NamespacedName: namespacedName,
+				}, prescale, scheduleResult)
+
+				Expect(err).NotTo(HaveOccurred())
+
+				// Verify HPA was updated
+				updatedHPA := &autoscalingv2.HorizontalPodAutoscaler{}
+				Expect(k8sClient.Get(ctx, hpaNamespacedName, updatedHPA)).To(Succeed())
+
+				// CPU utilization should be calculated as: originalSpecCpuUtilization * 100 / percent
+				// Since no current CPU metric, it falls back to spec CPU utilization (70)
+				expectedCPU := int32(70 * 100 / 70) // 70 * 100 / 70 = 100
+				Expect(*updatedHPA.Spec.Metrics[0].Resource.Target.AverageUtilization).To(Equal(expectedCPU))
+
+				// Stabilization window should be set to 0
+				Expect(*updatedHPA.Spec.Behavior.ScaleUp.StabilizationWindowSeconds).To(Equal(int32(0)))
+
+				// Verify prescale status was updated
+				updatedPrescale := &prescalerv1.Prescale{}
+				Expect(k8sClient.Get(ctx, namespacedName, updatedPrescale)).To(Succeed())
+				Expect(updatedPrescale.Status.LastScaledTime).NotTo(BeNil())
+				Expect(updatedPrescale.Status.LastPrescaleSpecCpuUtilization).To(Equal(expectedCPU))
+				Expect(updatedPrescale.Status.LastOriginalSpecCpuUtilization).To(Equal(int32(70)))
+				Expect(*updatedPrescale.Status.OrphanedSpecCpuUtilization).To(Equal(int32(70)))
+				Expect(*updatedPrescale.Status.OrphanedScaleUpStabilizationWindowSeconds).To(Equal(int32(60)))
 			})
 		})
 	})
@@ -587,6 +675,8 @@ var _ = Describe("Prescale Controller", func() {
 				updatedHPA := &autoscalingv2.HorizontalPodAutoscaler{}
 				Expect(k8sClient.Get(ctx, hpaNamespacedName, updatedHPA)).To(Succeed())
 				// After the full cycle, HPA should be reverted to original values
+				// The prescale calculation uses originalCurrentCpuUtilization (65) * 100 / percent (50) = 130
+				// But then it gets reverted back to original spec value (70)
 				Expect(*updatedHPA.Spec.Metrics[0].Resource.Target.AverageUtilization).To(Equal(int32(70)))
 				Expect(*updatedHPA.Spec.Behavior.ScaleUp.StabilizationWindowSeconds).To(Equal(int32(60)))
 
