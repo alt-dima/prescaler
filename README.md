@@ -35,8 +35,10 @@ Here's how a typical scenario might unfold:
 ## Deployment and Custom Resources
 **Attention!**
 - When you specify a cron schedule, keep in mind a **timezone**! Probably controller will run in your Kubernetes cluster in UTC timezone!
-- Also check maxConcurrentReconciles parameter and logs (in case you have overdue prescaling)
+- Also check `maxConcurrentReconciles` parameter and logs (in case you have overdue prescaling)
 - Prescaling may not be accurate/precise due to constant changes in scaling and CPU usage
+- Your HPA `scaleUp.policies` should allow scaling by maximal percent to ever wanted to scale in your schedules! Or by default HPA will scale up only to 100% (10->20 pods!)
+- Your HPA `maxReplicas` should fit max scaling percent!
 
 [Helm Chart](dist/chart)
 
@@ -56,6 +58,23 @@ spec:
   suspend: false # enable/disable prescaler
   revertWaitSeconds: 40 # max wait time before reverting back to original values. It is important, because we must provide Kubernetes time to detect and react on HPA changes (to trigger scaleup desiredReplicas)
 ```
+
+Verify that your HPA contains ScaleUp Policy like this:
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: nginx-project
+spec:
+  behavior:
+    scaleUp:
+      policies:
+      - periodSeconds: 5
+        type: Percent
+        value: 500
+      selectPolicy: Max
+```
+Where `500` is the max `percent` from your scedules in Prescaler.
 
 **Notice** how `percent` parameter works! It is used in formula to calculate new/temporary value for CPU AverageUtilization.
 For example: 

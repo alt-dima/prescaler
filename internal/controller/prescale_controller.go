@@ -394,19 +394,10 @@ func (r *PrescaleReconciler) executePrescale(ctx context.Context, req ctrl.Reque
 
 	// Prescale HPA Spec Metrics CPU AverageUtilization to prescaleSpecCpuUtilization
 	hpa.Spec.Metrics[originalSpecCpuUtilizationIndex].Resource.Target.AverageUtilization = &prescaleSpecCpuUtilization
-
-	// Add ScaleUp policy that will allow to scale up to the percent
-	// TODO: add check if policy already exists before adding and add to OrphanedScaleUpPolicies
-	hpa.Spec.Behavior.ScaleUp.Policies = append(hpa.Spec.Behavior.ScaleUp.Policies, autoscalingv2.HPAScalingPolicy{
-		Type:          autoscalingv2.PercentScalingPolicy,
-		Value:         percent,
-		PeriodSeconds: 5,
-	})
-	zero := int32(0)
-	hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds = &zero
-	maxPolicy := autoscalingv2.MaxChangePolicySelect
-	hpa.Spec.Behavior.ScaleUp.SelectPolicy = &maxPolicy
-
+	if originalScaleUpStabilizationWindowSeconds != nil {
+		zero := int32(0)
+		hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds = &zero
+	}
 	if err := r.Update(ctx, hpa); err != nil {
 		log.Error(err, "failed to update hpa for prescale")
 		r.Recorder.Event(prescaler, corev1.EventTypeWarning, "FailedUpdateHPA", err.Error())
@@ -491,15 +482,6 @@ func (r *PrescaleReconciler) revertHPA(ctx context.Context, req ctrl.Request, pr
 	if scheduleResult.originalScaleUpStabilizationWindowSeconds != nil {
 		hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds = scheduleResult.originalScaleUpStabilizationWindowSeconds
 	}
-
-	// Remove ScaleUp policy we added for prescale by searching for the policy with PeriodSeconds = 5 and percent = scheduleResult.bestMissedSchedule.Percent
-	for i, policy := range hpa.Spec.Behavior.ScaleUp.Policies {
-		if policy.PeriodSeconds == 5 && policy.Value == scheduleResult.bestMissedSchedule.Percent {
-			hpa.Spec.Behavior.ScaleUp.Policies = append(hpa.Spec.Behavior.ScaleUp.Policies[:i], hpa.Spec.Behavior.ScaleUp.Policies[i+1:]...)
-			break
-		}
-	}
-
 	if err := r.Update(ctx, hpa); err != nil {
 		log.Error(err, "failed to update hpa for revert")
 		r.Recorder.Event(prescaler, corev1.EventTypeWarning, "FailedUpdateHPA", err.Error())
