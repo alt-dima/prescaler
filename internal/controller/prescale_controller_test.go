@@ -126,7 +126,7 @@ var _ = Describe("Prescale Controller", func() {
 						Percent: 70,
 					},
 				},
-				Suspend:           func(b bool) *bool { return &b }(false),
+				Suspend:           false,
 				RevertWaitSeconds: func(i int64) *int64 { return &i }(10),
 			},
 		}
@@ -152,7 +152,7 @@ var _ = Describe("Prescale Controller", func() {
 	Describe("Reconcile", func() {
 		Context("When prescale resource is suspended", func() {
 			BeforeEach(func() {
-				prescale.Spec.Suspend = func(b bool) *bool { return &b }(true)
+				prescale.Spec.Suspend = true
 				Expect(k8sClient.Create(ctx, prescale)).To(Succeed())
 			})
 
@@ -414,8 +414,9 @@ var _ = Describe("Prescale Controller", func() {
 			scheduleResult = &ScheduleResult{
 				bestMissed: time.Now().Add(-time.Minute),
 				bestMissedSchedule: &prescalerv1.PrescaleSchedule{
-					Cron:    "55 * * * *",
-					Percent: 70,
+					Cron:                     "55 * * * *",
+					Percent:                  70,
+					UseCurrentCpuUtilization: true,
 				},
 			}
 		})

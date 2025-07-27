@@ -19,7 +19,7 @@ Here's how a typical scenario might unfold:
 ### In this case we have two options:
 - Configure **Horizontal Pod Autoscaler (HPA)** to scale based on **40% CPU usage** with a `stabilizationWindowSeconds` of `3600`. This will keep it upscaled most of the time, leading to wasted resources and money.
 - Use **Prescaler**. For the `SuperHeavyApp` HPA/Deployment, configure Prescaler's Custom Resource (CR) to prescale to **200% at "56 * * * *"**. At 8:56:00, Prescaler will:
-    - Change HPA's CPU `averageUtilization` from (current! CPU averageUtilization) 70% to (70*100/200) 35% and set `hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds` to 0 (for immediate scale-up).
+    - Change HPA's CPU `averageUtilization` from (current CPU averageUtilization if useCurrentCpuUtilization=true) 70% to (70*100/200) 35% and set `hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds` to 0 (for immediate scale-up).
     - HPA will start scaling up from 10 to 20 pods (2x). Prescaler will then wait for XX seconds.
     - Once HPA has scaled to 20 pods, Prescaler will revert HPA's CPU `averageUtilization` and `hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds` to their original values.
     - HPA will remain upscaled (with real usage at 35% across 20 pods) until `behavior.scaleDown.stabilizationWindowSeconds`. **It's better to increase this to 10 minutes** (the default is 5 minutes).
@@ -55,6 +55,7 @@ spec:
       percent: 500
     - cron: "55 13-23 * * 1-5"
       percent: 200 # To calculate new CPU AverageUtilization value based on formula: original * 100 / percent
+      useCurrentCpuUtilization: true # Use current (last value) of avg cpu instead of Spec avg value
   suspend: false # enable/disable prescaler
   revertWaitSeconds: 40 # max wait time before reverting back to original values. It is important, because we must provide Kubernetes time to detect and react on HPA changes (to trigger scaleup desiredReplicas)
 ```
@@ -79,7 +80,7 @@ Where `500` is the max `percent` from your scedules in Prescaler.
 **Notice** how `percent` parameter works! It is used in formula to calculate new/temporary value for CPU AverageUtilization.
 For example: 
 - you have 30 pods
-- HPA periodically calculates averageUtilization and updates its status in `status.currentMetrics`, for example, current avg cpu = 50
+- HPA periodically calculates averageUtilization and updates its status in `status.currentMetrics`, for example, current avg cpu = 50 but spec avg cpu remains static (like 70) - `useCurrentCpuUtilization` switches which value to use for calculation
 - in Prescaler you set percent = 200
 
 Than Prescaler will do math 50 * 100 / 200 = 25 and set CPU AverageUtilization = 25. HPA will scale up to 60 pods, because it will need 60 pods to maintain avg cpu about 25% (because on 50% it needed 30 pods)

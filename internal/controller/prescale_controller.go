@@ -124,7 +124,7 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
-	if prescaler.Spec.Suspend != nil && *prescaler.Spec.Suspend {
+	if prescaler.Spec.Suspend {
 		log.V(1).Info("prescaler suspended, skipping")
 		return ctrl.Result{}, nil
 	}
@@ -343,17 +343,17 @@ func (r *PrescaleReconciler) executePrescale(ctx context.Context, req ctrl.Reque
 		return nil
 	}
 
-	var originalCurrentCpuUtilization *int32
-	for _, metric := range hpa.Status.CurrentMetrics {
-		if metric.Resource.Name == cpuResourceName && metric.Resource.Current.AverageUtilization != nil {
-			originalCurrentCpuUtilization = metric.Resource.Current.AverageUtilization
-			break
+	var selectedCpuUtilization *int32
+	if scheduleResult.bestMissedSchedule.UseCurrentCpuUtilization {
+		for _, metric := range hpa.Status.CurrentMetrics {
+			if metric.Resource.Name == cpuResourceName && metric.Resource.Current.AverageUtilization != nil {
+				selectedCpuUtilization = metric.Resource.Current.AverageUtilization
+				break
+			}
 		}
 	}
-	// Safe due to short-circuit evaluation: if originalCurrentCpuUtilization is nil,
-	// the second condition is never evaluated
-	if originalCurrentCpuUtilization == nil || *originalCurrentCpuUtilization > *originalSpecCpuUtilization {
-		originalCurrentCpuUtilization = originalSpecCpuUtilization
+	if selectedCpuUtilization == nil || *selectedCpuUtilization > *originalSpecCpuUtilization {
+		selectedCpuUtilization = originalSpecCpuUtilization
 	}
 
 	var originalScaleUpStabilizationWindowSeconds *int32
@@ -362,7 +362,7 @@ func (r *PrescaleReconciler) executePrescale(ctx context.Context, req ctrl.Reque
 	}
 
 	currentStatusDesiredReplicas := hpa.Status.DesiredReplicas
-	log.Info("currentStatus", "originalSpecCpuUtilization", originalSpecCpuUtilization, "originalCurrentCpuUtilization", originalCurrentCpuUtilization, "currentStatusDesiredReplicas", currentStatusDesiredReplicas, "originalScaleUpStabilizationWindowSeconds", originalScaleUpStabilizationWindowSeconds)
+	log.Info("currentStatus", "originalSpecCpuUtilization", originalSpecCpuUtilization, "selectedCpuUtilization", selectedCpuUtilization, "currentStatusDesiredReplicas", currentStatusDesiredReplicas, "originalScaleUpStabilizationWindowSeconds", originalScaleUpStabilizationWindowSeconds)
 
 	// Store values in scheduleResult for later use
 	scheduleResult.currentDesiredReplicas = currentStatusDesiredReplicas
@@ -372,7 +372,7 @@ func (r *PrescaleReconciler) executePrescale(ctx context.Context, req ctrl.Reque
 
 	// Use the percent from the selected schedule
 	percent := scheduleResult.bestMissedSchedule.Percent
-	prescaleSpecCpuUtilization := int32(float64(*originalCurrentCpuUtilization) * 100 / float64(percent))
+	prescaleSpecCpuUtilization := int32(float64(*selectedCpuUtilization) * 100 / float64(percent))
 
 	// Re-fetch Prescaler for status update
 	if err := r.Get(ctx, req.NamespacedName, prescaler); err != nil {

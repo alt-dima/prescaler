@@ -106,11 +106,6 @@ func (in *PrescaleSpec) DeepCopyInto(out *PrescaleSpec) {
 		*out = make([]PrescaleSchedule, len(*in))
 		copy(*out, *in)
 	}
-	if in.Suspend != nil {
-		in, out := &in.Suspend, &out.Suspend
-		*out = new(bool)
-		**out = **in
-	}
 	if in.StartingDeadlineSeconds != nil {
 		in, out := &in.StartingDeadlineSeconds, &out.StartingDeadlineSeconds
 		*out = new(int64)

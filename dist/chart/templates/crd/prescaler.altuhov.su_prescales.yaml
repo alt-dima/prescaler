@@ -64,9 +64,14 @@ spec:
                       description: Percent to scale up by at this schedule
                       format: int32
                       type: integer
+                    useCurrentCpuUtilization:
+                      description: Use current cpu utilization instead of spec cpu
+                        utilization
+                      type: boolean
                   required:
                   - cron
                   - percent
+                  - useCurrentCpuUtilization
                   type: object
                 type: array
               startingDeadlineSeconds:

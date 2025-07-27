@@ -29,6 +29,8 @@ type PrescaleSchedule struct {
 	Cron string `json:"cron"`
 	// Percent to scale up by at this schedule
 	Percent int32 `json:"percent"`
+	// Use current cpu utilization instead of spec cpu utilization
+	UseCurrentCpuUtilization bool `json:"useCurrentCpuUtilization"`
 }
 
 // PrescaleSpec defines the desired state of Prescale.
@@ -41,7 +43,7 @@ type PrescaleSpec struct {
 
 	// Suspend the prescaler
 	// +kubebuilder:validation:Type=boolean
-	Suspend *bool `json:"suspend"`
+	Suspend bool `json:"suspend"`
 
 	// +kubebuilder:validation:Minimum=0
 
