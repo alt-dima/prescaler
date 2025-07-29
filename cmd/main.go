@@ -39,6 +39,7 @@ import (
 
 	prescalerv1 "github.com/alt-dima/prescaler/api/v1"
 	"github.com/alt-dima/prescaler/internal/controller"
+	kedav1alpha1 "github.com/kedacore/keda/v2/apis/keda/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -51,6 +52,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(prescalerv1.AddToScheme(scheme))
+	utilruntime.Must(kedav1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 

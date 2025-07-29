@@ -21,6 +21,15 @@ rules:
   - update
   - watch
 - apiGroups:
+  - keda.sh
+  resources:
+  - scaledobjects
+  verbs:
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
   - prescaler.altuhov.su
   resources:
   - prescales

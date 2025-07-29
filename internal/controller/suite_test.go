@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	prescalerv1 "github.com/alt-dima/prescaler/api/v1"
+	kedav1alpha1 "github.com/kedacore/keda/v2/apis/keda/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -60,6 +61,9 @@ var _ = BeforeSuite(func() {
 
 	var err error
 	err = prescalerv1.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
+
+	err = kedav1alpha1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:scheme
