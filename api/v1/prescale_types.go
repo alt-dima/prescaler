@@ -73,6 +73,9 @@ type PrescaleStatus struct {
 
 	// OrphanedScaleUpStabilizationWindowSeconds is the orphaned scale up stabilization window seconds because of failed hpa reverting
 	OrphanedScaleUpStabilizationWindowSeconds *int32 `json:"orphanedScaleUpStabilizationWindowSeconds,omitempty"`
+
+	// OrphanedScaleDownStabilizationWindowSeconds is the orphaned scale down stabilization window seconds because of failed hpa reverting
+	OrphanedScaleDownStabilizationWindowSeconds *int32 `json:"orphanedScaleDownStabilizationWindowSeconds,omitempty"`
 }
 
 // +kubebuilder:object:root=true

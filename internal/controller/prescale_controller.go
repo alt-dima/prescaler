@@ -177,13 +177,14 @@ func (r *PrescaleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 // ScheduleResult holds the result of schedule processing
 type ScheduleResult struct {
-	shouldSleep                               bool
-	result                                    ctrl.Result
-	bestMissed                                time.Time
-	bestMissedSchedule                        *prescalerv1.PrescaleSchedule
-	currentDesiredReplicas                    int32
-	originalSpecCpuUtilization                *int32
-	originalScaleUpStabilizationWindowSeconds *int32
+	shouldSleep                                 bool
+	result                                      ctrl.Result
+	bestMissed                                  time.Time
+	bestMissedSchedule                          *prescalerv1.PrescaleSchedule
+	currentDesiredReplicas                      int32
+	originalSpecCpuUtilization                  *int32
+	originalScaleUpStabilizationWindowSeconds   *int32
+	originalScaleDownStabilizationWindowSeconds *int32
 }
 
 // handleOrphanedState handles the case where there are orphaned prescale settings
@@ -192,8 +193,9 @@ func (r *PrescaleReconciler) handleOrphanedState(ctx context.Context, req ctrl.R
 
 	prescaleSpecCpuUtilizationOrphaned := prescaler.Status.OrphanedSpecCpuUtilization
 	prescaleSpecScaleUpStabilizationWindowSecondsOrphaned := prescaler.Status.OrphanedScaleUpStabilizationWindowSeconds
+	prescaleSpecScaleDownStabilizationWindowSecondsOrphaned := prescaler.Status.OrphanedScaleDownStabilizationWindowSeconds
 
-	if prescaleSpecCpuUtilizationOrphaned == nil && prescaleSpecScaleUpStabilizationWindowSecondsOrphaned == nil {
+	if prescaleSpecCpuUtilizationOrphaned == nil && prescaleSpecScaleUpStabilizationWindowSecondsOrphaned == nil && prescaleSpecScaleDownStabilizationWindowSecondsOrphaned == nil {
 		return nil
 	}
 
@@ -208,6 +210,9 @@ func (r *PrescaleReconciler) handleOrphanedState(ctx context.Context, req ctrl.R
 	if r.getHPAScaledObject(hpa) == "" {
 		if prescaleSpecScaleUpStabilizationWindowSecondsOrphaned != nil && hpa.Spec.Behavior != nil && hpa.Spec.Behavior.ScaleUp != nil {
 			hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds = prescaleSpecScaleUpStabilizationWindowSecondsOrphaned
+		}
+		if prescaleSpecScaleDownStabilizationWindowSecondsOrphaned != nil && hpa.Spec.Behavior != nil && hpa.Spec.Behavior.ScaleDown != nil {
+			hpa.Spec.Behavior.ScaleDown.StabilizationWindowSeconds = prescaleSpecScaleDownStabilizationWindowSecondsOrphaned
 		}
 		if prescaleSpecCpuUtilizationOrphaned != nil {
 			for index, metric := range hpa.Spec.Metrics {
@@ -233,6 +238,9 @@ func (r *PrescaleReconciler) handleOrphanedState(ctx context.Context, req ctrl.R
 		}
 		if prescaleSpecScaleUpStabilizationWindowSecondsOrphaned != nil && scaledObject.Spec.Advanced != nil && scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig != nil && scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig.Behavior != nil && scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig.Behavior.ScaleUp != nil {
 			scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig.Behavior.ScaleUp.StabilizationWindowSeconds = prescaleSpecScaleUpStabilizationWindowSecondsOrphaned
+		}
+		if prescaleSpecScaleDownStabilizationWindowSecondsOrphaned != nil && scaledObject.Spec.Advanced != nil && scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig != nil && scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig.Behavior != nil && scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig.Behavior.ScaleDown != nil {
+			scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig.Behavior.ScaleDown.StabilizationWindowSeconds = prescaleSpecScaleDownStabilizationWindowSecondsOrphaned
 		}
 		if prescaleSpecCpuUtilizationOrphaned != nil {
 			for index, trigger := range scaledObject.Spec.Triggers {
@@ -398,20 +406,31 @@ func (r *PrescaleReconciler) executePrescale(ctx context.Context, req ctrl.Reque
 		selectedCpuUtilization = originalSpecCpuUtilization
 	}
 
+	// Get originalScaleUpStabilizationWindowSeconds
 	var originalScaleUpStabilizationWindowSeconds *int32
 	if hpa.Spec.Behavior.ScaleUp != nil && hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds != nil && *hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds > 0 {
 		originalScaleUpStabilizationWindowSeconds = hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds
 	}
 
+	// Get originalScaleDownStabilizationWindowSeconds
+	var originalScaleDownStabilizationWindowSeconds *int32
+	if hpa.Spec.Behavior.ScaleDown != nil && hpa.Spec.Behavior.ScaleDown.StabilizationWindowSeconds != nil && *hpa.Spec.Behavior.ScaleDown.StabilizationWindowSeconds > 0 {
+		originalScaleDownStabilizationWindowSeconds = hpa.Spec.Behavior.ScaleDown.StabilizationWindowSeconds
+	}
+
+	// Get current status desired replicas
 	currentStatusDesiredReplicas := hpa.Status.DesiredReplicas
+
+	// Log prescale result
 	log.Info("currentStatus", "originalSpecCpuUtilization", originalSpecCpuUtilization, "selectedCpuUtilization", selectedCpuUtilization, "currentStatusDesiredReplicas", currentStatusDesiredReplicas, "originalScaleUpStabilizationWindowSeconds", originalScaleUpStabilizationWindowSeconds)
 
 	// Store values in scheduleResult for later use
 	scheduleResult.currentDesiredReplicas = currentStatusDesiredReplicas
 	scheduleResult.originalSpecCpuUtilization = originalSpecCpuUtilization
 	scheduleResult.originalScaleUpStabilizationWindowSeconds = originalScaleUpStabilizationWindowSeconds
+	scheduleResult.originalScaleDownStabilizationWindowSeconds = originalScaleDownStabilizationWindowSeconds
 
-	// Use the percent from the selected schedule
+	// Calculate prescaleSpecCpuUtilization
 	percent := scheduleResult.bestMissedSchedule.Percent
 	prescaleSpecCpuUtilization := int32(float64(*selectedCpuUtilization) * 100 / float64(percent))
 
@@ -421,12 +440,15 @@ func (r *PrescaleReconciler) executePrescale(ctx context.Context, req ctrl.Reque
 		return client.IgnoreNotFound(err)
 	}
 
+	// Set Prescaler status
 	prescaler.Status.LastScaledTime = &metav1.Time{Time: scheduleResult.bestMissed}
 	prescaler.Status.LastPrescaleSpecCpuUtilization = prescaleSpecCpuUtilization
 	prescaler.Status.LastOriginalSpecCpuUtilization = *originalSpecCpuUtilization
 	prescaler.Status.OrphanedSpecCpuUtilization = originalSpecCpuUtilization
 	prescaler.Status.OrphanedScaleUpStabilizationWindowSeconds = originalScaleUpStabilizationWindowSeconds
+	prescaler.Status.OrphanedScaleDownStabilizationWindowSeconds = originalScaleDownStabilizationWindowSeconds
 
+	// Update Prescaler status
 	if err := r.Status().Update(ctx, prescaler); err != nil {
 		log.Error(err, "Failed to update status for prescale status update")
 		r.Recorder.Event(prescaler, corev1.EventTypeWarning, "FailedUpdateStatus", err.Error())
@@ -434,25 +456,45 @@ func (r *PrescaleReconciler) executePrescale(ctx context.Context, req ctrl.Reque
 	}
 
 	if r.getHPAScaledObject(hpa) == "" {
+		// Prescale HPA
+
 		// Prescale HPA Spec Metrics CPU AverageUtilization to prescaleSpecCpuUtilization
 		hpa.Spec.Metrics[originalHPASpecCpuUtilizationIndex].Resource.Target.AverageUtilization = &prescaleSpecCpuUtilization
+
+		// Set scale up stabilization window seconds to 0 seconds
 		if originalScaleUpStabilizationWindowSeconds != nil && hpa.Spec.Behavior != nil && hpa.Spec.Behavior.ScaleUp != nil {
 			zero := int32(0)
 			hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds = &zero
 		}
+
+		// Set scale down stabilization window seconds to 10 seconds
+		if hpa.Spec.Behavior == nil {
+			hpa.Spec.Behavior = &autoscalingv2.HorizontalPodAutoscalerBehavior{}
+		}
+		if hpa.Spec.Behavior.ScaleDown == nil {
+			hpa.Spec.Behavior.ScaleDown = &autoscalingv2.HPAScalingRules{}
+		}
+		tenSeconds := int32(10)
+		hpa.Spec.Behavior.ScaleDown.StabilizationWindowSeconds = &tenSeconds
+
+		// Update HPA
 		if err := r.Update(ctx, hpa); err != nil {
 			log.Error(err, "failed to update hpa for prescale")
 			r.Recorder.Event(prescaler, corev1.EventTypeWarning, "FailedUpdateHPA", err.Error())
 			return client.IgnoreNotFound(err)
 		}
 	} else {
-		// Prescale ScaledObject Spec CPU AverageUtilization to prescaleSpecCpuUtilization
+		// Prescale ScaledObject
+
+		// Get ScaledObject
 		scaledObject := &kedav1alpha1.ScaledObject{}
 		if err := r.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: r.getHPAScaledObject(hpa)}, scaledObject); err != nil {
 			log.Error(err, "failed to get scaledobject for prescale")
 			r.Recorder.Event(prescaler, corev1.EventTypeWarning, "FailedGetScaledObject", err.Error())
 			return client.IgnoreNotFound(err)
 		}
+
+		// Find currentSpecCpuUtilizationIndex in ScaledObject Spec Triggers for prescale
 		var currentSpecCpuUtilizationIndex = -1
 		for index, trigger := range scaledObject.Spec.Triggers {
 			if trigger.Type == cpuResourceName {
@@ -465,11 +507,33 @@ func (r *PrescaleReconciler) executePrescale(ctx context.Context, req ctrl.Reque
 			r.Recorder.Event(prescaler, corev1.EventTypeWarning, "FailedFindCPUUtilizationIndex", "currentSpecCpuUtilizationIndex is -1")
 			return nil
 		}
+
+		// Prescale ScaledObject Spec CPU AverageUtilization to prescaleSpecCpuUtilization
 		scaledObject.Spec.Triggers[currentSpecCpuUtilizationIndex].Metadata["value"] = strconv.Itoa(int(prescaleSpecCpuUtilization))
+
+		// Set scale up stabilization window seconds to 0 seconds
 		if originalScaleUpStabilizationWindowSeconds != nil && scaledObject.Spec.Advanced != nil && scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig != nil && scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig.Behavior != nil && scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig.Behavior.ScaleUp != nil {
 			zero := int32(0)
 			scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig.Behavior.ScaleUp.StabilizationWindowSeconds = &zero
 		}
+
+		// Set scale down stabilization window seconds to 10 seconds
+		if scaledObject.Spec.Advanced == nil {
+			scaledObject.Spec.Advanced = &kedav1alpha1.AdvancedConfig{}
+		}
+		if scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig == nil {
+			scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig = &kedav1alpha1.HorizontalPodAutoscalerConfig{}
+		}
+		if scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig.Behavior == nil {
+			scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig.Behavior = &autoscalingv2.HorizontalPodAutoscalerBehavior{}
+		}
+		if scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig.Behavior.ScaleDown == nil {
+			scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig.Behavior.ScaleDown = &autoscalingv2.HPAScalingRules{}
+		}
+		tenSeconds := int32(10)
+		scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig.Behavior.ScaleDown.StabilizationWindowSeconds = &tenSeconds
+
+		// Update ScaledObject
 		if err := r.Update(ctx, scaledObject); err != nil {
 			log.Error(err, "failed to update scaledobject for prescale")
 			r.Recorder.Event(prescaler, corev1.EventTypeWarning, "FailedUpdateScaledObject", err.Error())
@@ -477,6 +541,7 @@ func (r *PrescaleReconciler) executePrescale(ctx context.Context, req ctrl.Reque
 		}
 	}
 
+	// Log prescale result
 	log.Info("prescaleSpecCpuUtilization", "value", prescaleSpecCpuUtilization)
 	r.Recorder.Event(prescaler, corev1.EventTypeNormal, "Prescaled", fmt.Sprintf("Successfully prescaled HPA to %d%% CPU utilization, currently %d replicas, %d%%", prescaleSpecCpuUtilization, currentStatusDesiredReplicas, percent))
 
@@ -553,9 +618,26 @@ func (r *PrescaleReconciler) revertHPA(ctx context.Context, req ctrl.Request, pr
 
 		// Revert HPA Spec Metrics to originalSpecCpuUtilization
 		hpa.Spec.Metrics[currentSpecCpuUtilizationIndex].Resource.Target.AverageUtilization = scheduleResult.originalSpecCpuUtilization
+
+		// Set scale up stabilization window seconds to originalScaleUpStabilizationWindowSeconds
 		if scheduleResult.originalScaleUpStabilizationWindowSeconds != nil && hpa.Spec.Behavior != nil && hpa.Spec.Behavior.ScaleUp != nil {
 			hpa.Spec.Behavior.ScaleUp.StabilizationWindowSeconds = scheduleResult.originalScaleUpStabilizationWindowSeconds
 		}
+
+		// Set scale down stabilization window seconds to originalScaleDownStabilizationWindowSeconds
+		if hpa.Spec.Behavior == nil {
+			hpa.Spec.Behavior = &autoscalingv2.HorizontalPodAutoscalerBehavior{}
+		}
+		if hpa.Spec.Behavior.ScaleDown == nil {
+			hpa.Spec.Behavior.ScaleDown = &autoscalingv2.HPAScalingRules{}
+		}
+		if scheduleResult.originalScaleDownStabilizationWindowSeconds != nil {
+			hpa.Spec.Behavior.ScaleDown.StabilizationWindowSeconds = scheduleResult.originalScaleDownStabilizationWindowSeconds
+		} else {
+			hpa.Spec.Behavior.ScaleDown.StabilizationWindowSeconds = nil
+		}
+
+		// Update HPA
 		if err := r.Update(ctx, hpa); err != nil {
 			log.Error(err, "failed to update hpa for revert")
 			r.Recorder.Event(prescaler, corev1.EventTypeWarning, "FailedUpdateHPA", err.Error())
@@ -581,11 +663,35 @@ func (r *PrescaleReconciler) revertHPA(ctx context.Context, req ctrl.Request, pr
 			r.Recorder.Event(prescaler, corev1.EventTypeWarning, "FailedFindCPUUtilizationIndex", "currentSpecCpuUtilizationIndex is -1")
 			return nil
 		}
+
+		// Revert ScaledObject Spec CPU AverageUtilization to originalSpecCpuUtilization
 		scaledObject.Spec.Triggers[currentSpecCpuUtilizationIndex].Metadata["value"] = strconv.Itoa(int(*scheduleResult.originalSpecCpuUtilization))
+
+		// Set scale up stabilization window seconds to originalScaleUpStabilizationWindowSeconds
 		if scheduleResult.originalScaleUpStabilizationWindowSeconds != nil && scaledObject.Spec.Advanced != nil && scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig != nil && scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig.Behavior != nil && scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig.Behavior.ScaleUp != nil {
 			zero := int32(0)
 			scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig.Behavior.ScaleUp.StabilizationWindowSeconds = &zero
 		}
+
+		if scaledObject.Spec.Advanced == nil {
+			scaledObject.Spec.Advanced = &kedav1alpha1.AdvancedConfig{}
+		}
+		if scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig == nil {
+			scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig = &kedav1alpha1.HorizontalPodAutoscalerConfig{}
+		}
+		if scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig.Behavior == nil {
+			scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig.Behavior = &autoscalingv2.HorizontalPodAutoscalerBehavior{}
+		}
+		if scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig.Behavior.ScaleDown == nil {
+			scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig.Behavior.ScaleDown = &autoscalingv2.HPAScalingRules{}
+		}
+		if scheduleResult.originalScaleDownStabilizationWindowSeconds != nil {
+			scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig.Behavior.ScaleDown.StabilizationWindowSeconds = scheduleResult.originalScaleDownStabilizationWindowSeconds
+		} else {
+			scaledObject.Spec.Advanced.HorizontalPodAutoscalerConfig.Behavior.ScaleDown.StabilizationWindowSeconds = nil
+		}
+
+		// Update ScaledObject
 		if err := r.Update(ctx, scaledObject); err != nil {
 			log.Error(err, "failed to update scaledobject for revert")
 			r.Recorder.Event(prescaler, corev1.EventTypeWarning, "FailedUpdateScaledObject", err.Error())
@@ -612,6 +718,9 @@ func (r *PrescaleReconciler) clearOrphanedFields(ctx context.Context, req ctrl.R
 	// Clear orphaned fields
 	prescaler.Status.OrphanedSpecCpuUtilization = nil
 	prescaler.Status.OrphanedScaleUpStabilizationWindowSeconds = nil
+	prescaler.Status.OrphanedScaleDownStabilizationWindowSeconds = nil
+
+	// Update Prescaler status
 	if err := r.Status().Update(ctx, prescaler); err != nil {
 		log.Error(err, "Failed to update status for status update orphaned fields to nil")
 		r.Recorder.Event(prescaler, corev1.EventTypeWarning, "FailedUpdateStatus", err.Error())
